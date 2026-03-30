@@ -169,7 +169,7 @@ public partial class WordHandler
         // Auto-pagination script: split overflowing pages and KaTeX rendering
         var bodyHeightPt = pgLayout.HeightPt - pgLayout.MarginTopPt - pgLayout.MarginBottomPt;
         sb.AppendLine("<script>");
-        sb.AppendLine("document.addEventListener('DOMContentLoaded',function(){");
+        sb.AppendLine("function _wordInit(){");
         sb.AppendLine("  if(typeof renderMathInElement!=='undefined'){");
         sb.AppendLine("    renderMathInElement(document.body,{delimiters:[");
         sb.AppendLine("      {left:'$$',right:'$$',display:true},");
@@ -304,7 +304,9 @@ public partial class WordHandler
   }
   setTimeout(paginate,100);
 ");
-        sb.AppendLine("});");
+        sb.AppendLine("}");
+        sb.AppendLine("if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',_wordInit);");
+        sb.AppendLine("else _wordInit();");
         sb.AppendLine("</script>");
 
         sb.AppendLine("</body>");
