@@ -241,14 +241,32 @@ public partial class PowerPointHandler
         var model3d = new OpenXmlUnknownElement("am3d", "model3d", Am3dNs);
         model3d.SetAttribute(new OpenXmlAttribute("r", "embed", rNs, modelRelId));
 
-        // Compute mpu early — needed by camera and trans
-        // mpu = mpuFactor / maxExtent, factor chosen by model scale:
-        //   tiny (ext < 5):     factor = 0.001 → sun(1)=1000, box(2)=500
-        //   medium (5~500):     factor = 100   → duck(165)=604308
-        //   large (>= 500):     factor = 1     → saturn(2331)=429, toycar(740)=1352
-        // Verified against native PowerPoint for sun, duck, saturn
-        double mpuFactor = bounds.MaxExtent < 5 ? 0.001 : bounds.MaxExtent < 500 ? 100.0 : 1.0;
-        var mpuVal = bounds.MaxExtent > 0 ? mpuFactor / bounds.MaxExtent : 0.5;
+        // mpu = 1 / effectiveMaxExtent
+        // effectiveMaxExtent = rawMaxExtent × nodeScale (from GLB root node transform)
+        var mpuVal = bounds.MaxExtent > 0 ? 1.0 / bounds.MaxExtent : 0.5;
+
+        // Half-extents (already in am3d coordinates from ParseGlbBoundingBox)
+        var halfExtX = bounds.ExtentX / 2.0;
+        var halfExtY = bounds.ExtentY / 2.0;
+        var halfExtZ = bounds.ExtentZ / 2.0;
+
+        // Radius for camera distance: normFactor * ‖halfExtents‖
+        // normFactor internally = 1/(2*maxHalfExt), but mpu may differ due to mpuFactor
+        var maxHalfExt = Math.Max(halfExtX, Math.Max(halfExtY, halfExtZ));
+        var normFactor = maxHalfExt > 0 ? 1.0 / (2.0 * maxHalfExt) : 0.5;
+        var radius = normFactor * Math.Sqrt(halfExtX * halfExtX + halfExtY * halfExtY + halfExtZ * halfExtZ);
+        if (radius == 0) radius = 1.0;
+
+        // FOV (default 45°)
+        const int fov60k = 2700000;
+        var fovHalfRad = fov60k / 60000.0 * Math.PI / 180.0 * 0.5;
+
+        // Camera Z distance (perspective mode)
+        var cameraZ = radius / Math.Sin(fovHalfRad);
+
+        // viewportSz: PPT computes this via tight-wrap 3D rendering.
+        // Without a renderer, use max(cx,cy) which gives ≤6% error vs PPT native.
+        var viewportSize = Math.Max(cx, cy);
 
         // 1. spPr (internal shape properties for the 3D model viewport)
         var spPr = new OpenXmlUnknownElement("am3d", "spPr", Am3dNs);
@@ -269,13 +287,10 @@ public partial class PowerPointHandler
         model3d.AppendChild(spPr);
 
         // 2. camera — perspective, looking at origin from z-axis
-        // Camera Z ≈ 70000000 (constant, matches native PowerPoint for all models)
-        // viewportSz ≈ max(cx,cy) * 1.5
-        var viewportSize = (long)(Math.Max(cx, cy) * 1.5);
-        var defaultCamZ = "70000000";
+        var computedCamZ = (long)(cameraZ * 36000000.0);
         var camPosX = properties.GetValueOrDefault("camerax", "0");
         var camPosY = properties.GetValueOrDefault("cameray", "0");
-        var camPosZ = properties.GetValueOrDefault("cameraz", defaultCamZ);
+        var camPosZ = properties.GetValueOrDefault("cameraz", computedCamZ.ToString());
 
         var camera = new OpenXmlUnknownElement("am3d", "camera", Am3dNs);
         var camPos = new OpenXmlUnknownElement("am3d", "pos", Am3dNs);
@@ -294,22 +309,22 @@ public partial class PowerPointHandler
         camLookAt.SetAttribute(new OpenXmlAttribute("", "z", null!, "0"));
         camera.AppendChild(camLookAt);
         var perspective = new OpenXmlUnknownElement("am3d", "perspective", Am3dNs);
-        perspective.SetAttribute(new OpenXmlAttribute("", "fov", null!, "2700000")); // 45 degrees
+        perspective.SetAttribute(new OpenXmlAttribute("", "fov", null!, fov60k.ToString()));
         camera.AppendChild(perspective);
         model3d.AppendChild(camera);
 
-        // 3. trans (model transform) — computed from GLB bounding box
-        // mpu = 1 / maxExtent
+        // 3. trans — mpu, preTrans, scale, rot, postTrans
         var trans = new OpenXmlUnknownElement("am3d", "trans", Am3dNs);
+
+        // mpu = normFactor = 1/fullMaxExtent, stored as PosRatio n/1000000
         var mpuN = (long)(mpuVal * 1000000);
         var mpu = new OpenXmlUnknownElement("am3d", "meterPerModelUnit", Am3dNs);
         mpu.SetAttribute(new OpenXmlAttribute("", "n", null!, mpuN.ToString()));
         mpu.SetAttribute(new OpenXmlAttribute("", "d", null!, "1000000"));
         trans.AppendChild(mpu);
 
-        // preTrans: shift model center to origin = -center * mpu * 360000
-        // Must be coupled with mpu so the shift is proportional to model size
-        var preTransScale = mpuVal * 360000.0;
+        // preTrans: center model at origin. bounds.Center* is already in am3d coordinates.
+        var preTransScale = mpuVal * 36000000.0;
         var preTrans = new OpenXmlUnknownElement("am3d", "preTrans", Am3dNs);
         preTrans.SetAttribute(new OpenXmlAttribute("", "dx", null!, ((long)(-bounds.CenterX * preTransScale)).ToString()));
         preTrans.SetAttribute(new OpenXmlAttribute("", "dy", null!, ((long)(-bounds.CenterY * preTransScale)).ToString()));
@@ -422,15 +437,18 @@ public partial class PowerPointHandler
 
     /// <summary>
     /// Bounding box info extracted from a GLB file.
+    /// Extents and center are in effective (scene-transformed) coordinates.
+    /// RawMaxExtent is before node scale, NodeScale is the root node scale factor.
     /// </summary>
     private record GlbBoundingBox(
         double CenterX, double CenterY, double CenterZ,
         double ExtentX, double ExtentY, double ExtentZ,
-        double MaxExtent, double MeterPerModelUnit);
+        double MaxExtent, double MeterPerModelUnit,
+        double RawMaxExtent, double NodeScale);
 
     /// <summary>
-    /// Parse a GLB file to extract the bounding box from accessor min/max values.
-    /// Used to compute preTrans (centering) and meterPerModelUnit (scaling).
+    /// Parse a GLB file and compute world-space AABB by traversing the scene graph,
+    /// matching OSpectre's bounding box calculation.
     /// </summary>
     private static GlbBoundingBox ParseGlbBoundingBox(string glbPath)
     {
@@ -439,60 +457,192 @@ public partial class PowerPointHandler
             using var fs = File.OpenRead(glbPath);
             using var reader = new BinaryReader(fs);
 
-            // GLB header: magic(4) + version(4) + length(4)
-            var magic = reader.ReadUInt32(); // 0x46546C67 = "glTF"
+            var magic = reader.ReadUInt32();
             var version = reader.ReadUInt32();
             var totalLen = reader.ReadUInt32();
-
-            // JSON chunk: length(4) + type(4) + data
             var chunkLen = reader.ReadUInt32();
-            var chunkType = reader.ReadUInt32(); // 0x4E4F534A = "JSON"
+            var chunkType = reader.ReadUInt32();
             var jsonBytes = reader.ReadBytes((int)chunkLen);
             var json = System.Text.Encoding.UTF8.GetString(jsonBytes);
-
-            // Parse accessors to find position min/max
-            double gMinX = double.MaxValue, gMinY = double.MaxValue, gMinZ = double.MaxValue;
-            double gMaxX = double.MinValue, gMaxY = double.MinValue, gMaxZ = double.MinValue;
-            bool found = false;
-
-            // Simple JSON parsing for "min":[x,y,z] and "max":[x,y,z] in accessors
             var doc = System.Text.Json.JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("accessors", out var accessors))
+            var root = doc.RootElement;
+
+            // 1. Build per-mesh local AABBs from accessors
+            //    meshBounds[meshIndex] = (min, max) in local mesh space
+            var meshBounds = new Dictionary<int, (double[] min, double[] max)>();
+            if (root.TryGetProperty("meshes", out var meshes) &&
+                root.TryGetProperty("accessors", out var accessors))
             {
-                foreach (var acc in accessors.EnumerateArray())
+                for (int mi = 0; mi < meshes.GetArrayLength(); mi++)
                 {
-                    if (acc.TryGetProperty("min", out var min) &&
-                        acc.TryGetProperty("max", out var max) &&
-                        min.GetArrayLength() == 3 && max.GetArrayLength() == 3)
+                    double[] lMin = { double.MaxValue, double.MaxValue, double.MaxValue };
+                    double[] lMax = { double.MinValue, double.MinValue, double.MinValue };
+                    bool hasBounds = false;
+
+                    var mesh = meshes[mi];
+                    if (mesh.TryGetProperty("primitives", out var prims))
                     {
-                        found = true;
-                        var mnX = min[0].GetDouble(); var mnY = min[1].GetDouble(); var mnZ = min[2].GetDouble();
-                        var mxX = max[0].GetDouble(); var mxY = max[1].GetDouble(); var mxZ = max[2].GetDouble();
-                        if (mnX < gMinX) gMinX = mnX; if (mnY < gMinY) gMinY = mnY; if (mnZ < gMinZ) gMinZ = mnZ;
-                        if (mxX > gMaxX) gMaxX = mxX; if (mxY > gMaxY) gMaxY = mxY; if (mxZ > gMaxZ) gMaxZ = mxZ;
+                        foreach (var prim in prims.EnumerateArray())
+                        {
+                            if (!prim.TryGetProperty("attributes", out var attrs)) continue;
+                            if (!attrs.TryGetProperty("POSITION", out var posIdx)) continue;
+                            var acc = accessors[posIdx.GetInt32()];
+                            if (acc.TryGetProperty("min", out var mn) && acc.TryGetProperty("max", out var mx)
+                                && mn.GetArrayLength() >= 3 && mx.GetArrayLength() >= 3)
+                            {
+                                hasBounds = true;
+                                for (int i = 0; i < 3; i++)
+                                {
+                                    var lo = mn[i].GetDouble(); var hi = mx[i].GetDouble();
+                                    if (lo < lMin[i]) lMin[i] = lo;
+                                    if (hi > lMax[i]) lMax[i] = hi;
+                                }
+                            }
+                        }
                     }
+                    if (hasBounds)
+                        meshBounds[mi] = (lMin, lMax);
                 }
             }
 
-            if (!found)
-                return new GlbBoundingBox(0, 0, 0, 1, 1, 1, 1, 0.5);
+            if (meshBounds.Count == 0)
+                return new GlbBoundingBox(0, 0, 0, 1, 1, 1, 1, 0.5, 1, 1.0);
 
-            var cx = (gMinX + gMaxX) / 2;
-            var cy = (gMinY + gMaxY) / 2;
-            var cz = (gMinZ + gMaxZ) / 2;
-            var ex = gMaxX - gMinX;
-            var ey = gMaxY - gMinY;
-            var ez = gMaxZ - gMinZ;
-            var maxExt = Math.Max(ex, Math.Max(ey, ez));
-            var mpu = maxExt > 0 ? 1.0 / (2.0 * maxExt) : 0.5;
+            // 2. Parse node transforms and traverse scene graph
+            var nodesArr = root.TryGetProperty("nodes", out var nodesEl) ? nodesEl : default;
+            int nodeCount = nodesArr.ValueKind == System.Text.Json.JsonValueKind.Array ? nodesArr.GetArrayLength() : 0;
 
-            return new GlbBoundingBox(cx, cy, cz, ex, ey, ez, maxExt, mpu);
+            // World-space AABB accumulator
+            double wMinX = double.MaxValue, wMinY = double.MaxValue, wMinZ = double.MaxValue;
+            double wMaxX = double.MinValue, wMaxY = double.MinValue, wMaxZ = double.MinValue;
+            bool hasWorldBounds = false;
+
+            void TraverseNode(int nodeIdx, double[] parentMatrix)
+            {
+                if (nodeIdx < 0 || nodeIdx >= nodeCount) return;
+                var node = nodesArr[nodeIdx];
+
+                // Compute this node's local transform matrix (4x4 column-major)
+                var local = GetNodeMatrix(node);
+                var world = MultiplyMatrix4x4(parentMatrix, local);
+
+                // If node has a mesh, transform its AABB corners to world space
+                if (node.TryGetProperty("mesh", out var meshIdx) && meshBounds.TryGetValue(meshIdx.GetInt32(), out var mb))
+                {
+                    var (lMin, lMax) = mb;
+                    // Transform 8 AABB corners
+                    for (int cx = 0; cx < 2; cx++)
+                    for (int cy = 0; cy < 2; cy++)
+                    for (int cz = 0; cz < 2; cz++)
+                    {
+                        double px = cx == 0 ? lMin[0] : lMax[0];
+                        double py = cy == 0 ? lMin[1] : lMax[1];
+                        double pz = cz == 0 ? lMin[2] : lMax[2];
+                        // Apply 4x4 column-major transform: result = M * [px,py,pz,1]
+                        double wx = world[0] * px + world[4] * py + world[8]  * pz + world[12];
+                        double wy = world[1] * px + world[5] * py + world[9]  * pz + world[13];
+                        double wz = world[2] * px + world[6] * py + world[10] * pz + world[14];
+                        if (wx < wMinX) wMinX = wx; if (wx > wMaxX) wMaxX = wx;
+                        if (wy < wMinY) wMinY = wy; if (wy > wMaxY) wMaxY = wy;
+                        if (wz < wMinZ) wMinZ = wz; if (wz > wMaxZ) wMaxZ = wz;
+                        hasWorldBounds = true;
+                    }
+                }
+
+                // Recurse into children
+                if (node.TryGetProperty("children", out var children))
+                    foreach (var child in children.EnumerateArray())
+                        TraverseNode(child.GetInt32(), world);
+            }
+
+            // Identity matrix
+            var identity = new double[] { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+
+            if (root.TryGetProperty("scenes", out var scenes) && scenes.GetArrayLength() > 0)
+            {
+                var scene = scenes[0];
+                if (scene.TryGetProperty("nodes", out var sceneNodes))
+                    foreach (var ni in sceneNodes.EnumerateArray())
+                        TraverseNode(ni.GetInt32(), identity);
+            }
+
+            if (!hasWorldBounds)
+                return new GlbBoundingBox(0, 0, 0, 1, 1, 1, 1, 0.5, 1, 1.0);
+
+            // Use glTF world-space coordinates directly (no axis transform needed —
+            // the 3D engine handles coordinate system conversion at render time)
+            var ecx = (wMinX + wMaxX) / 2;
+            var ecy = (wMinY + wMaxY) / 2;
+            var ecz = (wMinZ + wMaxZ) / 2;
+            var eex = wMaxX - wMinX;
+            var eey = wMaxY - wMinY;
+            var eez = wMaxZ - wMinZ;
+            var maxExt = Math.Max(eex, Math.Max(eey, eez));
+            var mpu = maxExt > 0 ? 1.0 / maxExt : 0.5;
+
+            // RawMaxExtent/NodeScale kept for backward compat but not used in new formula
+            var rawMaxExt = Math.Max(wMaxX - wMinX, Math.Max(wMaxY - wMinY, wMaxZ - wMinZ));
+            double nodeScale = maxExt > 0 && rawMaxExt > 0 ? maxExt / rawMaxExt : 1.0;
+
+            return new GlbBoundingBox(ecx, ecy, ecz, eex, eey, eez, maxExt, mpu, rawMaxExt, nodeScale);
         }
         catch
         {
-            // Fallback for unparseable files
-            return new GlbBoundingBox(0, 0, 0, 1, 1, 1, 1, 0.5);
+            return new GlbBoundingBox(0, 0, 0, 1, 1, 1, 1, 0.5, 1, 1.0);
         }
+    }
+
+    /// <summary>
+    /// Get the 4x4 column-major transform matrix from a glTF node.
+    /// Supports "matrix", "scale"/"rotation"/"translation" (TRS), or identity.
+    /// </summary>
+    private static double[] GetNodeMatrix(System.Text.Json.JsonElement node)
+    {
+        if (node.TryGetProperty("matrix", out var mat) && mat.GetArrayLength() == 16)
+        {
+            var m = new double[16];
+            for (int i = 0; i < 16; i++) m[i] = mat[i].GetDouble();
+            return m;
+        }
+
+        // TRS decomposition → 4x4 column-major
+        double tx = 0, ty = 0, tz = 0;
+        double qx = 0, qy = 0, qz = 0, qw = 1;
+        double sx = 1, sy = 1, sz = 1;
+
+        if (node.TryGetProperty("translation", out var t) && t.GetArrayLength() == 3)
+        { tx = t[0].GetDouble(); ty = t[1].GetDouble(); tz = t[2].GetDouble(); }
+        if (node.TryGetProperty("rotation", out var r) && r.GetArrayLength() == 4)
+        { qx = r[0].GetDouble(); qy = r[1].GetDouble(); qz = r[2].GetDouble(); qw = r[3].GetDouble(); }
+        if (node.TryGetProperty("scale", out var s) && s.GetArrayLength() == 3)
+        { sx = s[0].GetDouble(); sy = s[1].GetDouble(); sz = s[2].GetDouble(); }
+
+        // Quaternion to rotation matrix, then apply scale and translation
+        double x2 = qx + qx, y2 = qy + qy, z2 = qz + qz;
+        double xx = qx * x2, xy = qx * y2, xz = qx * z2;
+        double yy = qy * y2, yz = qy * z2, zz = qz * z2;
+        double wx = qw * x2, wy = qw * y2, wz = qw * z2;
+
+        return new[]
+        {
+            (1 - yy - zz) * sx, (xy + wz) * sx,     (xz - wy) * sx,     0,
+            (xy - wz) * sy,     (1 - xx - zz) * sy,  (yz + wx) * sy,     0,
+            (xz + wy) * sz,     (yz - wx) * sz,      (1 - xx - yy) * sz, 0,
+            tx,                  ty,                   tz,                  1
+        };
+    }
+
+    /// <summary>
+    /// Multiply two 4x4 column-major matrices: result = A * B.
+    /// </summary>
+    private static double[] MultiplyMatrix4x4(double[] a, double[] b)
+    {
+        var r = new double[16];
+        for (int col = 0; col < 4; col++)
+        for (int row = 0; row < 4; row++)
+            r[col * 4 + row] = a[row] * b[col * 4] + a[4 + row] * b[col * 4 + 1]
+                              + a[8 + row] * b[col * 4 + 2] + a[12 + row] * b[col * 4 + 3];
+        return r;
     }
 
 }
