@@ -414,8 +414,32 @@ public partial class PowerPointHandler
         {
             var charBullet = firstParaBullet.GetFirstChild<Drawing.CharacterBullet>();
             var autoBullet = firstParaBullet.GetFirstChild<Drawing.AutoNumberedBullet>();
-            if (charBullet != null) node.Format["list"] = charBullet.Char?.Value ?? "•";
-            else if (autoBullet?.Type?.HasValue == true) node.Format["list"] = autoBullet.Type.InnerText;
+            if (charBullet != null)
+            {
+                var charVal = charBullet.Char?.Value ?? "•";
+                node.Format["list"] = charVal switch
+                {
+                    "•" or "●" or "○" => "bullet",
+                    "–" or "—" or "-" => "dash",
+                    "►" or "▶" or "▸" or "➤" => "arrow",
+                    "✓" or "✔" => "check",
+                    "★" or "☆" or "⭐" => "star",
+                    _ => charVal
+                };
+            }
+            else if (autoBullet?.Type?.HasValue == true)
+            {
+                var autoVal = autoBullet.Type.InnerText;
+                node.Format["list"] = autoVal switch
+                {
+                    "arabicPeriod" or "arabicParenR" or "arabicPlain" or "arabicParenBoth" => "numbered",
+                    "romanLcPeriod" or "romanLcParenR" or "romanLcParenBoth" => "romanLc",
+                    "romanUcPeriod" or "romanUcParenR" or "romanUcParenBoth" => "romanUc",
+                    "alphaLcPeriod" or "alphaLcParenR" or "alphaLcParenBoth" => "alphaLc",
+                    "alphaUcPeriod" or "alphaUcParenR" or "alphaUcParenBoth" => "alphaUc",
+                    _ => autoVal
+                };
+            }
         }
 
         // Collect font info
@@ -493,7 +517,7 @@ public partial class PowerPointHandler
             var lineColor = ReadColorFromFill(lineSolidFill);
             if (lineColor != null) node.Format["line"] = lineColor;
             if (outline.GetFirstChild<Drawing.NoFill>() != null) node.Format["line"] = "none";
-            if (outline.Width?.HasValue == true) node.Format["lineWidth"] = FormatEmu(outline.Width.Value);
+            if (outline.Width?.HasValue == true) node.Format["lineWidth"] = FormatLineWidth(outline.Width.Value);
             var dash = outline.GetFirstChild<Drawing.PresetDash>();
             if (dash?.Val?.HasValue == true)
             {
@@ -1016,7 +1040,7 @@ public partial class PowerPointHandler
 
         var ln = spPr?.GetFirstChild<Drawing.Outline>();
         if (ln?.Width?.HasValue == true)
-            node.Format["lineWidth"] = FormatEmu(ln.Width.Value);
+            node.Format["lineWidth"] = FormatLineWidth(ln.Width.Value);
         var cxnDash = ln?.GetFirstChild<Drawing.PresetDash>();
         if (cxnDash?.Val?.HasValue == true)
         {
