@@ -219,12 +219,12 @@ public partial class WordHandler
                     break;
                 }
 
-                case "acceptallchanges":
-                    if (IsTruthy(value))
+                case "acceptallchanges" or "accept-changes" or "acceptchanges":
+                    if (value.Equals("all", StringComparison.OrdinalIgnoreCase) || IsTruthy(value))
                         AcceptAllChanges();
                     break;
-                case "rejectallchanges":
-                    if (IsTruthy(value))
+                case "rejectallchanges" or "reject-changes" or "rejectchanges":
+                    if (value.Equals("all", StringComparison.OrdinalIgnoreCase) || IsTruthy(value))
                         RejectAllChanges();
                     break;
 
