@@ -105,7 +105,29 @@ public partial class ExcelHandler
         var seriesList = ChartHelper.ReadAllSeries(plotArea);
         if (seriesList.Count == 0) return;
 
-        // 2b. Resolve cell references when cache is missing (chart references other sheets)
+        // 2b. Resolve series names from cell references when strCache is missing
+        if (seriesList.Any(s => s.name == "?"))
+        {
+            var nameSerEls = plotArea.Descendants<OpenXmlCompositeElement>()
+                .Where(e => e.LocalName == "ser" && e.Parent != null &&
+                    (e.Parent.LocalName.Contains("Chart") || e.Parent.LocalName.Contains("chart")))
+                .ToList();
+            for (int i = 0; i < seriesList.Count && i < nameSerEls.Count; i++)
+            {
+                if (seriesList[i].name != "?") continue;
+                var strRef = nameSerEls[i].GetFirstChild<C.SeriesText>()
+                    ?.Descendants<C.StringReference>().FirstOrDefault();
+                var formula = strRef?.GetFirstChild<C.Formula>()?.Text;
+                if (!string.IsNullOrEmpty(formula))
+                {
+                    var resolved = ReadCellRangeAsStrings(formula);
+                    if (resolved != null && resolved.Length > 0)
+                        seriesList[i] = (resolved[0], seriesList[i].values);
+                }
+            }
+        }
+
+        // 2c. Resolve cell references when cache is missing (chart references other sheets)
         var needsCatResolve = categories.Length == 0;
         var needsValResolve = seriesList.All(s => s.values.Length == 0);
         if (needsCatResolve || needsValResolve)
