@@ -621,7 +621,7 @@ public partial class PowerPointHandler
     /// Render a picture element to HTML. When called from a group, pass overridePos
     /// with the adjusted coordinates — the original element is NEVER modified.
     /// </summary>
-    private static void RenderPicture(StringBuilder sb, Picture pic, SlidePart slidePart,
+    private static void RenderPicture(StringBuilder sb, Picture pic, OpenXmlPart slidePart,
         Dictionary<string, string> themeColors, (long x, long y, long cx, long cy)? overridePos = null)
     {
         var xfrm = pic.ShapeProperties?.Transform2D;

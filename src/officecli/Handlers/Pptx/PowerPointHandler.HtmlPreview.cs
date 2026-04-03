@@ -451,8 +451,7 @@ public partial class PowerPointHandler
         // Also render pictures from layout/master (logos, decorative images)
         foreach (var pic in shapeTree.Elements<Picture>())
         {
-            if (part is SlidePart sp)
-                RenderPicture(sb, pic, sp, themeColors);
+            RenderPicture(sb, pic, part, themeColors);
         }
     }
 
