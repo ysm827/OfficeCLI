@@ -74,34 +74,43 @@ curl -fsSL https://officecli.ai/SKILL.md
 
 원하는 것을 설명하기만 하면 AionUi가 모든 것을 처리합니다.
 
-## 빠른 시작
-
-프레젠테이션을 처음부터 완성까지, 단 몇 초:
+## 개발자용 — 30초 만에 라이브로 확인
 
 ```bash
-# 새 PowerPoint 생성
+# 1. 설치 (macOS / Linux)
+curl -fsSL https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.sh | bash
+# Windows (PowerShell): irm https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.ps1 | iex
+
+# 2. 빈 PowerPoint 생성
 officecli create deck.pptx
 
-# 제목과 배경색이 있는 슬라이드 추가
-officecli add deck.pptx / --type slide --prop title="Q4 Report" --prop background=1A1A2E
+# 3. 라이브 미리보기 시작 — 브라우저에서 http://localhost:26315 이 열립니다
+officecli watch deck.pptx --port 26315
 
-# 슬라이드에 텍스트 도형 추가
+# 4. 다른 터미널을 열고 슬라이드 추가 — 브라우저가 즉시 업데이트됩니다
+officecli add deck.pptx / --type slide --prop title="Hello, World!"
+```
+
+이게 전부입니다. `add`, `set`, `remove` 명령을 실행할 때마다 미리보기가 실시간으로 갱신됩니다. 계속 실험해 보세요 — 브라우저가 바로 여러분의 라이브 피드백 루프입니다.
+
+## 빠른 시작
+
+```bash
+# 프레젠테이션을 생성하고 콘텐츠 추가
+officecli create deck.pptx
+officecli add deck.pptx / --type slide --prop title="Q4 Report" --prop background=1A1A2E
 officecli add deck.pptx /slide[1] --type shape \
   --prop text="Revenue grew 25%" --prop x=2cm --prop y=5cm \
   --prop font=Arial --prop size=24 --prop color=FFFFFF
 
-# 프레젠테이션 개요 보기
+# 개요 보기
 officecli view deck.pptx outline
-```
+# → Slide 1: Q4 Report
+# →   Shape 1 [TextBox]: Revenue grew 25%
 
-출력:
+# HTML로 보기 — 서버 없이 브라우저에서 렌더링된 미리보기를 엽니다
+officecli view deck.pptx html
 
-```
-Slide 1: Q4 Report
-  Shape 1 [TextBox]: Revenue grew 25%
-```
-
-```bash
 # 모든 요소의 구조화된 JSON 가져오기
 officecli get deck.pptx /slide[1]/shape[1] --json
 ```
@@ -220,7 +229,7 @@ officecli install
 
 ```bash
 officecli watch deck.pptx
-# http://localhost:18080 열기 — set/add/remove 시마다 자동 새로고침
+# http://localhost:26315 열기 — set/add/remove 시마다 자동 새로고침
 ```
 
 도형, 차트, 수식, 3D 모델(Three.js), 모프 전환, 줌 내비게이션, 모든 도형 효과를 렌더링합니다.
@@ -558,5 +567,7 @@ officecli validate report.docx && officecli view report.docx issues --json
 버그 리포트와 기여는 [GitHub Issues](https://github.com/iOfficeAI/OfficeCLI/issues)로 환영합니다.
 
 ---
+
+OfficeCLI가 유용하다면 [GitHub에서 스타를 눌러주세요](https://github.com/iOfficeAI/OfficeCLI) — 더 많은 사람들이 프로젝트를 발견하는 데 도움이 됩니다.
 
 [OfficeCLI.AI](https://OfficeCLI.AI) | [GitHub](https://github.com/iOfficeAI/OfficeCLI)

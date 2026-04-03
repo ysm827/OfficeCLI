@@ -74,34 +74,43 @@ curl -fsSL https://officecli.ai/SKILL.md
 
 只需描述你想要什么，AionUi 帮你搞定。
 
-## 快速开始
-
-从零到完成一个演示文稿，只需几秒钟：
+## 开发者 — 30 秒亲眼看到效果
 
 ```bash
-# 创建新的 PowerPoint
+# 1. 安装（macOS / Linux）
+curl -fsSL https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.sh | bash
+# Windows (PowerShell): irm https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.ps1 | iex
+
+# 2. 创建一个空白 PowerPoint
 officecli create deck.pptx
 
-# 添加带标题和背景色的幻灯片
-officecli add deck.pptx / --type slide --prop title="Q4 Report" --prop background=1A1A2E
+# 3. 启动实时预览 — 浏览器自动打开 http://localhost:26315
+officecli watch deck.pptx --port 26315
 
-# 在幻灯片上添加文本形状
+# 4. 打开另一个终端，添加一页幻灯片 — 浏览器即时刷新
+officecli add deck.pptx / --type slide --prop title="Hello, World!"
+```
+
+就这么简单。你执行的每一条 `add`、`set`、`remove` 命令都会实时刷新预览。继续尝试吧 — 浏览器就是你的实时反馈窗口。
+
+## 快速开始
+
+```bash
+# 创建演示文稿并添加内容
+officecli create deck.pptx
+officecli add deck.pptx / --type slide --prop title="Q4 Report" --prop background=1A1A2E
 officecli add deck.pptx /slide[1] --type shape \
   --prop text="Revenue grew 25%" --prop x=2cm --prop y=5cm \
   --prop font=Arial --prop size=24 --prop color=FFFFFF
 
-# 查看演示文稿大纲
+# 查看大纲
 officecli view deck.pptx outline
-```
+# → Slide 1: Q4 Report
+# →   Shape 1 [TextBox]: Revenue grew 25%
 
-输出：
+# 查看 HTML — 在浏览器中打开渲染预览，无需启动服务器
+officecli view deck.pptx html
 
-```
-Slide 1: Q4 Report
-  Shape 1 [TextBox]: Revenue grew 25%
-```
-
-```bash
 # 获取任意元素的结构化 JSON
 officecli get deck.pptx /slide[1]/shape[1] --json
 ```
@@ -220,7 +229,7 @@ OfficeCLI 会在后台自动检查更新。通过 `officecli config autoUpdate f
 
 ```bash
 officecli watch deck.pptx
-# 打开 http://localhost:18080 — 每次 set/add/remove 自动刷新
+# 打开 http://localhost:26315 — 每次 set/add/remove 自动刷新
 ```
 
 支持形状、图表、公式、3D 模型（Three.js）、morph 过渡、缩放导航和所有形状效果的渲染。
@@ -558,6 +567,8 @@ officecli validate report.docx && officecli view report.docx issues --json
 欢迎通过 [GitHub Issues](https://github.com/iOfficeAI/OfficeCLI/issues) 提交 Bug 报告和贡献代码。
 
 ---
+
+如果觉得 OfficeCLI 好用，请在 [GitHub 上点个 Star](https://github.com/iOfficeAI/OfficeCLI) — 帮助更多人发现这个项目。
 
 [OfficeCLI.AI](https://OfficeCLI.AI) | [GitHub](https://github.com/iOfficeAI/OfficeCLI)
 

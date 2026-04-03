@@ -74,34 +74,43 @@ curl -fsSL https://officecli.ai/SKILL.md
 
 やりたいことを説明するだけで、AionUi がすべて処理します。
 
-## クイックスタート
-
-ゼロからプレゼンテーション完成まで、わずか数秒：
+## 開発者向け — 30秒でライブ体験
 
 ```bash
-# 新しい PowerPoint を作成
+# 1. インストール（macOS / Linux）
+curl -fsSL https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.sh | bash
+# Windows (PowerShell): irm https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.ps1 | iex
+
+# 2. 空の PowerPoint を作成
 officecli create deck.pptx
 
-# タイトルと背景色付きのスライドを追加
-officecli add deck.pptx / --type slide --prop title="Q4 Report" --prop background=1A1A2E
+# 3. ライブプレビューを開始 — ブラウザで http://localhost:26315 が開きます
+officecli watch deck.pptx --port 26315
 
-# スライドにテキストシェイプを追加
+# 4. 別のターミナルを開いてスライドを追加 — ブラウザが即座に更新されます
+officecli add deck.pptx / --type slide --prop title="Hello, World!"
+```
+
+これだけです。`add`、`set`、`remove` コマンドを実行するたびに、プレビューがリアルタイムで更新されます。どんどん試してみてください — ブラウザがあなたのライブフィードバックループです。
+
+## クイックスタート
+
+```bash
+# プレゼンテーションを作成してコンテンツを追加
+officecli create deck.pptx
+officecli add deck.pptx / --type slide --prop title="Q4 Report" --prop background=1A1A2E
 officecli add deck.pptx /slide[1] --type shape \
   --prop text="Revenue grew 25%" --prop x=2cm --prop y=5cm \
   --prop font=Arial --prop size=24 --prop color=FFFFFF
 
-# プレゼンテーションのアウトラインを表示
+# アウトラインを表示
 officecli view deck.pptx outline
-```
+# → Slide 1: Q4 Report
+# →   Shape 1 [TextBox]: Revenue grew 25%
 
-出力：
+# HTML で表示 — サーバー不要、ブラウザでレンダリングされたプレビューを開きます
+officecli view deck.pptx html
 
-```
-Slide 1: Q4 Report
-  Shape 1 [TextBox]: Revenue grew 25%
-```
-
-```bash
 # 任意の要素の構造化 JSON を取得
 officecli get deck.pptx /slide[1]/shape[1] --json
 ```
@@ -220,7 +229,7 @@ officecli install
 
 ```bash
 officecli watch deck.pptx
-# http://localhost:18080 を開く — set/add/remove のたびに自動更新
+# http://localhost:26315 を開く — set/add/remove のたびに自動更新
 ```
 
 図形、チャート、数式、3D モデル（Three.js）、モーフトランジション、ズームナビゲーション、全シェイプエフェクトをレンダリングします。
@@ -558,5 +567,7 @@ officecli validate report.docx && officecli view report.docx issues --json
 バグ報告やコントリビューションは [GitHub Issues](https://github.com/iOfficeAI/OfficeCLI/issues) まで。
 
 ---
+
+OfficeCLI が役に立ったら、ぜひ [GitHub でスターを付けてください](https://github.com/iOfficeAI/OfficeCLI) — より多くの人にプロジェクトを届ける力になります。
 
 [OfficeCLI.AI](https://OfficeCLI.AI) | [GitHub](https://github.com/iOfficeAI/OfficeCLI)

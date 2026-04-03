@@ -74,34 +74,43 @@ Want to experience the power of OfficeCLI without writing a single command? Inst
 
 Just describe what you want, and AionUi handles the rest.
 
-## Quick Start
-
-From zero to a finished presentation in seconds:
+## For Developers — See It Live in 30 Seconds
 
 ```bash
-# Create a new PowerPoint
+# 1. Install (macOS / Linux)
+curl -fsSL https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.sh | bash
+# Windows (PowerShell): irm https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.ps1 | iex
+
+# 2. Create a blank PowerPoint
 officecli create deck.pptx
 
-# Add a slide with a title and background color
-officecli add deck.pptx / --type slide --prop title="Q4 Report" --prop background=1A1A2E
+# 3. Start live preview — opens http://localhost:26315 in your browser
+officecli watch deck.pptx --port 26315
 
-# Add a text shape to the slide
+# 4. Open another terminal, add a slide — watch the browser update instantly
+officecli add deck.pptx / --type slide --prop title="Hello, World!"
+```
+
+That's it. Every `add`, `set`, or `remove` command you run will refresh the preview in real time. Keep experimenting — the browser is your live feedback loop.
+
+## Quick Start
+
+```bash
+# Create a presentation and add content
+officecli create deck.pptx
+officecli add deck.pptx / --type slide --prop title="Q4 Report" --prop background=1A1A2E
 officecli add deck.pptx /slide[1] --type shape \
   --prop text="Revenue grew 25%" --prop x=2cm --prop y=5cm \
   --prop font=Arial --prop size=24 --prop color=FFFFFF
 
-# View the outline of the presentation
+# View as outline
 officecli view deck.pptx outline
-```
+# → Slide 1: Q4 Report
+# →   Shape 1 [TextBox]: Revenue grew 25%
 
-Output:
+# View as HTML — opens a rendered preview in your browser, no server needed
+officecli view deck.pptx html
 
-```
-Slide 1: Q4 Report
-  Shape 1 [TextBox]: Revenue grew 25%
-```
-
-```bash
 # Get structured JSON for any element
 officecli get deck.pptx /slide[1]/shape[1] --json
 ```
@@ -220,7 +229,7 @@ Updates are checked automatically in the background. Disable with `officecli con
 
 ```bash
 officecli watch deck.pptx
-# Opens http://localhost:18080 — refreshes on every set/add/remove
+# Opens http://localhost:26315 — refreshes on every set/add/remove
 ```
 
 Renders shapes, charts, equations, 3D models (Three.js), morph transitions, zoom navigation, and all shape effects.
@@ -562,6 +571,8 @@ Requires [.NET 10 SDK](https://dotnet.microsoft.com/download) for compilation on
 Bug reports and contributions are welcome on [GitHub Issues](https://github.com/iOfficeAI/OfficeCLI/issues).
 
 ---
+
+If you find OfficeCLI useful, please [give it a star on GitHub](https://github.com/iOfficeAI/OfficeCLI) — it helps others discover the project.
 
 [OfficeCLI.AI](https://OfficeCLI.AI) | [GitHub](https://github.com/iOfficeAI/OfficeCLI)
 
