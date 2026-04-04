@@ -186,15 +186,9 @@ static partial class CommandBuilder
                 }
                 var outputMsg = setSpatialLine != null ? $"{message}\n  {setSpatialLine}" : message;
                 bool allFailed = applied.Count == 0 && (stillUnsupported.Count > 0 || unsupported.Count > 0);
-                if (allFailed)
-                {
-                    Console.WriteLine(OutputFormatter.WrapEnvelopeError(outputMsg, allWarnings.Count > 0 ? allWarnings : null));
-                }
-                else
-                {
-                    var setNode = handler.Get(path, 0);
-                    Console.WriteLine(OutputFormatter.WrapEnvelopeWithData(outputMsg, setNode, allWarnings.Count > 0 ? allWarnings : null, findMatchCount));
-                }
+                Console.WriteLine(allFailed
+                    ? OutputFormatter.WrapEnvelopeError(outputMsg, allWarnings.Count > 0 ? allWarnings : null)
+                    : OutputFormatter.WrapEnvelopeText(outputMsg, allWarnings.Count > 0 ? allWarnings : null, findMatchCount));
             }
             else
             {

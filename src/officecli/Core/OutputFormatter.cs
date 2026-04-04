@@ -134,13 +134,16 @@ public static class OutputFormatter
     /// <summary>
     /// Wraps a plain text result (like "Updated ..." or "Added ...") into an envelope.
     /// </summary>
-    public static string WrapEnvelopeText(string message, List<CliWarning>? warnings = null)
+    public static string WrapEnvelopeText(string message, List<CliWarning>? warnings = null, int? matched = null)
     {
         var envelope = new JsonObject
         {
             ["success"] = true,
             ["message"] = message
         };
+
+        if (matched.HasValue)
+            envelope["matched"] = matched.Value;
 
         if (warnings is { Count: > 0 })
             envelope["warnings"] = JsonSerializer.SerializeToNode(warnings, AppJsonContext.Default.ListCliWarning);
