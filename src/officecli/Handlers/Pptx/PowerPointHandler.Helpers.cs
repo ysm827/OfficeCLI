@@ -1512,6 +1512,10 @@ public partial class PowerPointHandler
         if (paragraphs.Count == 0)
             throw new ArgumentException($"No paragraphs found at path: {parentPath}");
 
+        // Support regex=true prop as alternative to r"..." prefix
+        if (properties.TryGetValue("regex", out var regexFlag) && ParseHelpers.IsTruthy(regexFlag) && !findValue.StartsWith("r\"") && !findValue.StartsWith("r'"))
+            findValue = $"r\"{findValue}\"";
+
         var (pattern, isRegex) = ParseFindPattern(findValue);
 
         // Find first match in any paragraph

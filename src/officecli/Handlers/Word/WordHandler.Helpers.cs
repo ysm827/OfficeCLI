@@ -956,6 +956,10 @@ public partial class WordHandler
         else
             throw new ArgumentException("after-find/before-find requires a paragraph parent path.");
 
+        // Support regex=true prop as alternative to r"..." prefix
+        if (properties.TryGetValue("regex", out var regexFlag) && ParseHelpers.IsTruthy(regexFlag) && !findValue.StartsWith("r\"") && !findValue.StartsWith("r'"))
+            findValue = $"r\"{findValue}\"";
+
         var (pattern, isRegex) = ParseFindPattern(findValue);
         var runTexts = BuildRunTexts(para);
         if (runTexts.Count == 0)
