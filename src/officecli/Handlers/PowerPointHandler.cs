@@ -16,6 +16,7 @@ public partial class PowerPointHandler : IDocumentHandler
 {
     private readonly PresentationDocument _doc;
     private readonly string _filePath;
+    public int LastFindMatchCount { get; internal set; }
 
     public PowerPointHandler(string filePath, bool editable)
     {

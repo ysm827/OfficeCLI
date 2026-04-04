@@ -271,7 +271,20 @@ static partial class CommandBuilder
                 var applied = props.Where(kv => !unsupported.Contains(kv.Key)).ToList();
                 var parts = new List<string>();
                 if (applied.Count > 0)
-                    parts.Add($"Updated {path}: {string.Join(", ", applied.Select(kv => $"{kv.Key}={kv.Value}"))}");
+                {
+                    var msg = $"Updated {path}: {string.Join(", ", applied.Select(kv => $"{kv.Key}={kv.Value}"))}";
+                    if (props.ContainsKey("find"))
+                    {
+                        var matched = handler switch
+                        {
+                            OfficeCli.Handlers.WordHandler wh => wh.LastFindMatchCount,
+                            OfficeCli.Handlers.PowerPointHandler ph => ph.LastFindMatchCount,
+                            _ => 0
+                        };
+                        msg += $" ({matched} matched)";
+                    }
+                    parts.Add(msg);
+                }
                 if (unsupported.Count > 0)
                     parts.Add(FormatUnsupported(unsupported));
                 return string.Join("\n", parts);

@@ -61,7 +61,8 @@ public partial class WordHandler
                 findText = $"r\"{findText}\"";
 
             var effectivePath = (path is "" or "/") ? "/body" : path;
-            ProcessFind(effectivePath, findText, replace, formatProps.Count > 0 ? formatProps : new Dictionary<string, string>());
+            var matchCount = ProcessFind(effectivePath, findText, replace, formatProps.Count > 0 ? formatProps : new Dictionary<string, string>());
+            LastFindMatchCount = matchCount;
 
             // Apply paragraph-level properties to the matched paragraphs
             if (paraProps.Count > 0)

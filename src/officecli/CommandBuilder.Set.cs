@@ -116,8 +116,21 @@ static partial class CommandBuilder
             foreach (var ac in autoCorrected)
                 applied.Add(new KeyValuePair<string, string>(ac.Corrected, ac.Value));
 
+            // Get find match count if applicable
+            int? findMatchCount = null;
+            if (properties.ContainsKey("find"))
+            {
+                findMatchCount = handler switch
+                {
+                    OfficeCli.Handlers.WordHandler wh => wh.LastFindMatchCount,
+                    OfficeCli.Handlers.PowerPointHandler ph => ph.LastFindMatchCount,
+                    _ => null
+                };
+            }
+
             var message = applied.Count > 0
                 ? $"Updated {path}: {string.Join(", ", applied.Select(kv => $"{kv.Key}={kv.Value}"))}"
+                  + (findMatchCount.HasValue ? $" ({findMatchCount.Value} matched)" : "")
                 : $"No properties applied to {path}";
 
             // Check if position-related props were changed → show coordinates + overlap warning
@@ -173,9 +186,15 @@ static partial class CommandBuilder
                 }
                 var outputMsg = setSpatialLine != null ? $"{message}\n  {setSpatialLine}" : message;
                 bool allFailed = applied.Count == 0 && (stillUnsupported.Count > 0 || unsupported.Count > 0);
-                Console.WriteLine(allFailed
-                    ? OutputFormatter.WrapEnvelopeError(outputMsg, allWarnings.Count > 0 ? allWarnings : null)
-                    : OutputFormatter.WrapEnvelopeText(outputMsg, allWarnings.Count > 0 ? allWarnings : null));
+                if (allFailed)
+                {
+                    Console.WriteLine(OutputFormatter.WrapEnvelopeError(outputMsg, allWarnings.Count > 0 ? allWarnings : null));
+                }
+                else
+                {
+                    var setNode = handler.Get(path, 1);
+                    Console.WriteLine(OutputFormatter.WrapEnvelopeWithData(outputMsg, setNode, allWarnings.Count > 0 ? allWarnings : null, findMatchCount));
+                }
             }
             else
             {

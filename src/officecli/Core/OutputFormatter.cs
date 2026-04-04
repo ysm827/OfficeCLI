@@ -148,6 +148,24 @@ public static class OutputFormatter
         return envelope.ToJsonString(JsonOptions);
     }
 
+    public static string WrapEnvelopeWithData(string message, DocumentNode data, List<CliWarning>? warnings = null, int? matched = null)
+    {
+        var envelope = new JsonObject
+        {
+            ["success"] = true,
+            ["message"] = message,
+            ["data"] = JsonSerializer.SerializeToNode(data, AppJsonContext.Default.DocumentNode)
+        };
+
+        if (matched.HasValue)
+            envelope["matched"] = matched.Value;
+
+        if (warnings is { Count: > 0 })
+            envelope["warnings"] = JsonSerializer.SerializeToNode(warnings, AppJsonContext.Default.ListCliWarning);
+
+        return envelope.ToJsonString(JsonOptions);
+    }
+
     /// <summary>
     /// Wraps a failed text result (e.g. all properties unsupported) into an envelope.
     /// Output: { "success": false, "message": "...", "warnings": [...] }

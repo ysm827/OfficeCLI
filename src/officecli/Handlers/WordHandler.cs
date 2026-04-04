@@ -19,6 +19,7 @@ public partial class WordHandler : IDocumentHandler
 {
     private readonly WordprocessingDocument _doc;
     private readonly string _filePath;
+    public int LastFindMatchCount { get; internal set; }
 
     public WordHandler(string filePath, bool editable)
     {

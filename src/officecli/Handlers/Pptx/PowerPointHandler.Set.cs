@@ -53,7 +53,8 @@ public partial class PowerPointHandler
             if (properties.TryGetValue("regex", out var regexFlag) && ParseHelpers.IsTruthy(regexFlag) && !findText.StartsWith("r\"") && !findText.StartsWith("r'"))
                 findText = $"r\"{findText}\"";
 
-            ProcessPptFind(path, findText, replace, formatProps);
+            var matchCount = ProcessPptFind(path, findText, replace, formatProps);
+            LastFindMatchCount = matchCount;
             return [];
         }
 
