@@ -276,6 +276,45 @@ internal static partial class ChartHelper
                     var plotArea2 = chart.GetFirstChild<C.PlotArea>();
                     if (plotArea2 == null) { unsupported.Add(key); break; }
                     var colorList = value.Split(',').Select(c => c.Trim()).ToArray();
+
+                    // Pie and doughnut charts use VaryColors with dPt elements per data point.
+                    // Color per-series is meaningless (only 1 series); color each data point instead.
+                    var isPieOrDoughnut = plotArea2.GetFirstChild<C.PieChart>() != null
+                        || plotArea2.GetFirstChild<C.DoughnutChart>() != null;
+                    if (isPieOrDoughnut)
+                    {
+                        var ser = plotArea2.Descendants<OpenXmlCompositeElement>()
+                            .FirstOrDefault(e => e.LocalName == "ser");
+                        if (ser != null)
+                        {
+                            // Remove existing dPt elements then re-add with new colors
+                            var existing = ser.Elements<C.DataPoint>().ToList();
+                            foreach (var dp in existing) dp.Remove();
+
+                            for (int ci = 0; ci < colorList.Length; ci++)
+                            {
+                                var dPt = new C.DataPoint();
+                                dPt.AppendChild(new C.Index { Val = (uint)ci });
+                                dPt.AppendChild(new C.InvertIfNegative { Val = false });
+                                var spPr = new C.ChartShapeProperties();
+                                var solidFill = new Drawing.SolidFill();
+                                solidFill.AppendChild(BuildChartColorElement(colorList[ci]));
+                                spPr.AppendChild(solidFill);
+                                dPt.AppendChild(spPr);
+
+                                // Insert dPt before cat/val data — after Order/SerText/spPr header elements
+                                var insertBefore = ser.Elements<C.CategoryAxisData>().FirstOrDefault()
+                                    ?? (OpenXmlElement?)ser.Elements<C.Values>().FirstOrDefault()
+                                    ?? ser.Elements<C.Explosion>().FirstOrDefault();
+                                if (insertBefore != null)
+                                    ser.InsertBefore(dPt, insertBefore);
+                                else
+                                    ser.AppendChild(dPt);
+                            }
+                        }
+                        break;
+                    }
+
                     var allSer = plotArea2.Descendants<OpenXmlCompositeElement>()
                         .Where(e => e.LocalName == "ser").ToList();
                     for (int ci = 0; ci < Math.Min(colorList.Length, allSer.Count); ci++)

@@ -85,11 +85,11 @@ internal static partial class ChartHelper
                     categories, seriesData, catAxisId, valAxisId, colors);
                 break;
             case "pie":
-                chartElement = BuildPieChart(categories, seriesData);
+                chartElement = BuildPieChart(categories, seriesData, colors);
                 needsAxes = false;
                 break;
             case "doughnut":
-                chartElement = BuildDoughnutChart(categories, seriesData);
+                chartElement = BuildDoughnutChart(categories, seriesData, colors);
                 needsAxes = false;
                 break;
             case "scatter":
@@ -441,24 +441,48 @@ internal static partial class ChartHelper
     }
 
     internal static C.PieChart BuildPieChart(
-        string[]? categories, List<(string name, double[] values)> seriesData)
+        string[]? categories, List<(string name, double[] values)> seriesData,
+        string[]? colors = null)
     {
         var pieChart = new C.PieChart(new C.VaryColors { Val = true });
         if (seriesData.Count > 0)
-            pieChart.AppendChild(BuildPieSeries(0, seriesData[0].name,
-                categories, seriesData[0].values));
+        {
+            var series = BuildPieSeries(0, seriesData[0].name,
+                categories, seriesData[0].values);
+            ApplyDataPointColors(series, seriesData[0].values.Length, colors);
+            pieChart.AppendChild(series);
+        }
         return pieChart;
     }
 
     internal static C.DoughnutChart BuildDoughnutChart(
-        string[]? categories, List<(string name, double[] values)> seriesData)
+        string[]? categories, List<(string name, double[] values)> seriesData,
+        string[]? colors = null)
     {
         var chart = new C.DoughnutChart(new C.VaryColors { Val = true });
         if (seriesData.Count > 0)
-            chart.AppendChild(BuildPieSeries(0, seriesData[0].name,
-                categories, seriesData[0].values));
+        {
+            var series = BuildPieSeries(0, seriesData[0].name,
+                categories, seriesData[0].values);
+            ApplyDataPointColors(series, seriesData[0].values.Length, colors);
+            chart.AppendChild(series);
+        }
         chart.AppendChild(new C.HoleSize { Val = 50 });
         return chart;
+    }
+
+    /// <summary>
+    /// For pie/doughnut charts, apply per-data-point colors via c:dPt elements.
+    /// Each slice gets its own DataPoint with Index and ChartShapeProperties containing a solid fill.
+    /// </summary>
+    private static void ApplyDataPointColors(C.PieChartSeries series, int pointCount, string[]? colors)
+    {
+        if (colors == null || colors.Length == 0) return;
+        var count = Math.Min(pointCount, colors.Length);
+        for (int i = 0; i < count; i++)
+        {
+            ApplyDataPointColor(series, i, colors[i]);
+        }
     }
 
     internal static C.ScatterChart BuildScatterChart(
