@@ -142,6 +142,198 @@ internal static class PivotTableHelper
         return targetSheet.PivotTableParts.ToList().IndexOf(pivotPart) + 1;
     }
 
+    // ==================== Axis Tree (general N-level row/col abstraction) ====================
+    //
+    // For N≥3 row or col fields the existing specialized renderers (1×1, 2×1,
+    // 1×2, 2×2 with K data variants) cannot be extended without an N² explosion
+    // in case count. The AxisTree abstraction below replaces them with a single
+    // recursive tree representation:
+    //
+    //   - The root has one child per unique value of the FIRST (outermost) field
+    //   - Each level-L node has one child per unique value of the (L+1)-th field
+    //     that appears in the source data PAIRED WITH the parent's path
+    //   - Leaves are at depth N (i.e. path length = N field values)
+    //
+    // Example for rows=[地区, 城市, 区]:
+    //   root
+    //   ├── 华东
+    //   │   ├── 上海
+    //   │   │   ├── 浦东
+    //   │   │   └── 徐汇
+    //   │   └── 杭州
+    //   │       └── 西湖
+    //   └── 华北
+    //       └── 北京
+    //           ├── 朝阳
+    //           └── 海淀
+    //
+    // Walk order produces (in display sequence): outer subtotals at internal
+    // nodes + leaf rows at leaves + grand total at the very end. For 2D pivots
+    // both row and col axes use independent AxisTrees and the renderer walks
+    // them in lockstep.
+    //
+    // This abstraction is currently used ONLY for N≥3 cases via the dispatch in
+    // RenderPivotIntoSheet. The 8 existing N≤2 cases continue to use their
+    // specialized renderers (regression-tested via test-samples/pivot_baselines).
+
+    /// <summary>
+    /// One node in the axis tree. Represents either an internal node (subtotal
+    /// row/col) or a leaf node (specific data row/col). Children are sorted in
+    /// ordinal display order to keep rowItems/colItems indices consistent with
+    /// the corresponding pivotField items list.
+    /// </summary>
+    private sealed class AxisNode
+    {
+        /// <summary>The label for this node (e.g. "华东"). Empty string for the root.</summary>
+        public string Label { get; }
+        /// <summary>0 = root, 1 = outermost field, 2 = next inner, ..., N = leaf level.</summary>
+        public int Depth { get; }
+        /// <summary>Path from root: [outerVal, ..., this.Label]. Length == Depth.</summary>
+        public string[] Path { get; }
+        /// <summary>Child nodes in ordinal display order. Empty for leaves.</summary>
+        public List<AxisNode> Children { get; } = new();
+
+        public AxisNode(string label, int depth, string[] path)
+        {
+            Label = label;
+            Depth = depth;
+            Path = path;
+        }
+
+        public bool IsLeaf => Children.Count == 0;
+    }
+
+    /// <summary>
+    /// Build an AxisTree from columnData given the field indices for an axis.
+    /// Only paths that actually appear in the source data are included — Excel
+    /// does not enumerate empty cartesian intersections at any level.
+    /// </summary>
+    private static AxisNode BuildAxisTree(List<int> fieldIndices, List<string[]> columnData)
+    {
+        var root = new AxisNode(string.Empty, 0, Array.Empty<string>());
+        if (fieldIndices.Count == 0 || columnData.Count == 0)
+            return root;
+
+        var rowCount = columnData[fieldIndices[0]].Length;
+        // For each source row, walk down the tree, creating child nodes as needed.
+        for (int r = 0; r < rowCount; r++)
+        {
+            var current = root;
+            var validPath = true;
+            var path = new string[fieldIndices.Count];
+
+            for (int level = 0; level < fieldIndices.Count; level++)
+            {
+                var fieldIdx = fieldIndices[level];
+                if (fieldIdx < 0 || fieldIdx >= columnData.Count) { validPath = false; break; }
+                var values = columnData[fieldIdx];
+                if (r >= values.Length) { validPath = false; break; }
+                var v = values[r];
+                if (string.IsNullOrEmpty(v)) { validPath = false; break; }
+                path[level] = v;
+
+                // Find or create child for this value at this level.
+                var child = current.Children.FirstOrDefault(c => c.Label == v);
+                if (child == null)
+                {
+                    var childPath = new string[level + 1];
+                    Array.Copy(path, childPath, level + 1);
+                    child = new AxisNode(v, level + 1, childPath);
+                    current.Children.Add(child);
+                }
+                current = child;
+            }
+
+            // Drop the row entirely if any field had an empty value — matches the
+            // "skip rows with missing values" semantics of the specialized renderers.
+            _ = validPath;
+        }
+
+        // Sort children at every level using the same StringComparer.Ordinal that
+        // BuildOuterInnerGroups and AppendFieldItems use, so the rowItems indices
+        // line up with the pivotField items list.
+        SortAxisTreeRecursive(root);
+        return root;
+    }
+
+    private static void SortAxisTreeRecursive(AxisNode node)
+    {
+        node.Children.Sort((a, b) => StringComparer.Ordinal.Compare(a.Label, b.Label));
+        foreach (var c in node.Children) SortAxisTreeRecursive(c);
+    }
+
+    /// <summary>
+    /// Walk the tree in display order, yielding each node alongside whether it's
+    /// a subtotal (internal) or a leaf, plus its absolute display row/col index
+    /// (relative to the start of the data area).
+    ///
+    /// Display order for row axis is "pre-order": for each internal node, emit
+    /// the subtotal row first, then recurse into children. The order matches
+    /// what BuildMultiRowItems already produces for N=2 and what Excel writes
+    /// for N≥3 in compact mode.
+    ///
+    /// For col axis it's the same plus an additional subtotal column AFTER the
+    /// children of each internal node — Excel writes the col subtotal column
+    /// to the right of the inner cols, not to the left like the row subtotal.
+    /// </summary>
+    private static IEnumerable<(AxisNode node, bool isLeaf, bool isSubtotal)> WalkAxisTree(
+        AxisNode root, bool isCol)
+    {
+        // Skip the synthetic root, walk its children in order.
+        foreach (var child in root.Children)
+            foreach (var entry in WalkAxisTreeRecursive(child, isCol))
+                yield return entry;
+    }
+
+    private static IEnumerable<(AxisNode node, bool isLeaf, bool isSubtotal)> WalkAxisTreeRecursive(
+        AxisNode node, bool isCol)
+    {
+        if (node.IsLeaf)
+        {
+            yield return (node, true, false);
+            yield break;
+        }
+
+        // Row axis convention: outer subtotal row appears BEFORE the children.
+        // Col axis convention: outer subtotal col appears AFTER the children
+        //                     (matches multi_col_authored.xlsx ground truth).
+        if (!isCol)
+            yield return (node, false, true);
+
+        foreach (var child in node.Children)
+            foreach (var entry in WalkAxisTreeRecursive(child, isCol))
+                yield return entry;
+
+        if (isCol)
+            yield return (node, false, true);
+    }
+
+    /// <summary>Count all internal nodes (subtotal positions) in a tree.</summary>
+    private static int CountSubtotalNodes(AxisNode root)
+    {
+        int count = 0;
+        void Recurse(AxisNode n)
+        {
+            if (!n.IsLeaf && n.Depth > 0) count++;
+            foreach (var c in n.Children) Recurse(c);
+        }
+        Recurse(root);
+        return count;
+    }
+
+    /// <summary>Count all leaf nodes in a tree.</summary>
+    private static int CountLeafNodes(AxisNode root)
+    {
+        int count = 0;
+        void Recurse(AxisNode n)
+        {
+            if (n.IsLeaf && n.Depth > 0) count++;
+            else foreach (var c in n.Children) Recurse(c);
+        }
+        Recurse(root);
+        return count;
+    }
+
     // ==================== Geometry & Cache Readback Helpers ====================
 
     /// <summary>Computed pivot table extent — anchor + bounding range + key offsets.</summary>
@@ -185,65 +377,75 @@ internal static class PivotTableHelper
         List<(int idx, string func, string name)> valueFields)
     {
         int dataFieldCount = Math.Max(1, valueFields.Count);
+        int rowLabelCols = 1; // Compact mode
 
-        // Compact mode: row labels collapse into a single column regardless of
-        // how many row fields the user assigned (verified against
-        // multi_row_authored.xlsx with rows=地区,城市 → still firstDataCol=1).
-        int rowLabelCols = 1;
+        int valueCols, totalCols, dataRowCount, headerRows;
 
-        // Width depends on number of col fields and data fields:
-        //   N_col=0: 1 row label + K data cols (no col labels, no grand total)
-        //   N_col=1: 1 row label + L*K data cols + K grand total cols
-        //   N_col=2: 1 row label + per-outer ((inner_count + 1 subtotal) * K) + K grand total
-        int valueCols, totalCols;
-        if (colFieldIndices.Count >= 2)
+        // N≥3 on either axis: use AxisTree for both width and height counts.
+        // N≤2: keep the existing specialized formulas (regression-tested).
+        if (rowFieldIndices.Count >= 3 || colFieldIndices.Count >= 3)
+        {
+            var rowTree = BuildAxisTree(rowFieldIndices, columnData);
+            var colTree = BuildAxisTree(colFieldIndices, columnData);
+
+            // Display row count = subtotal positions + leaf positions
+            // (the grand total row is added separately below).
+            int rowSubtotals = CountSubtotalNodes(rowTree);
+            int rowLeaves = CountLeafNodes(rowTree);
+            dataRowCount = rowSubtotals + rowLeaves;
+
+            int colSubtotals = CountSubtotalNodes(colTree);
+            int colLeaves = CountLeafNodes(colTree);
+            // Per col position: K cells. Plus K grand totals.
+            valueCols = (colSubtotals + colLeaves) * dataFieldCount;
+            totalCols = dataFieldCount;
+
+            // Header rows: 1 caption + N_col field-label rows + (K>1 ? 1 : 0).
+            headerRows = 1 + Math.Max(1, colFieldIndices.Count) + (dataFieldCount > 1 ? 1 : 0);
+        }
+        else if (colFieldIndices.Count >= 2)
         {
             var groups = BuildOuterInnerGroups(
                 colFieldIndices[0], colFieldIndices[1], columnData);
-            // Per-outer: K leaf cells per inner + K subtotal cells.
             valueCols = groups.Sum(g => (g.inners.Count + 1) * dataFieldCount);
-            totalCols = dataFieldCount; // K grand total cols (one per data field)
+            totalCols = dataFieldCount;
+
+            if (rowFieldIndices.Count >= 2)
+            {
+                var rowGroups = BuildOuterInnerGroups(
+                    rowFieldIndices[0], rowFieldIndices[1], columnData);
+                dataRowCount = rowGroups.Sum(g => 1 + g.inners.Count);
+            }
+            else
+            {
+                dataRowCount = Math.Max(1, ProductOfUniqueValues(rowFieldIndices, columnData));
+            }
+            headerRows = dataFieldCount > 1 ? 4 : 3;
         }
         else
         {
             int colUnique = ProductOfUniqueValues(colFieldIndices, columnData);
             valueCols = Math.Max(1, colUnique) * dataFieldCount;
             totalCols = colFieldIndices.Count > 0 ? dataFieldCount : 0;
+
+            if (rowFieldIndices.Count >= 2)
+            {
+                var rowGroups = BuildOuterInnerGroups(
+                    rowFieldIndices[0], rowFieldIndices[1], columnData);
+                dataRowCount = rowGroups.Sum(g => 1 + g.inners.Count);
+            }
+            else
+            {
+                dataRowCount = Math.Max(1, ProductOfUniqueValues(rowFieldIndices, columnData));
+            }
+
+            if (colFieldIndices.Count > 0)
+                headerRows = dataFieldCount > 1 ? 3 : 2;
+            else
+                headerRows = dataFieldCount > 1 ? 2 : 1;
         }
+
         int width = rowLabelCols + valueCols + totalCols;
-
-        // Row count:
-        //   N=1 row field: just R unique row values
-        //   N=2 row fields: outer count + leaf combos (only existing combos)
-        int dataRowCount;
-        if (rowFieldIndices.Count >= 2)
-        {
-            var groups = BuildOuterInnerGroups(
-                rowFieldIndices[0], rowFieldIndices[1], columnData);
-            dataRowCount = groups.Sum(g => 1 + g.inners.Count);
-        }
-        else
-        {
-            dataRowCount = Math.Max(1, ProductOfUniqueValues(rowFieldIndices, columnData));
-        }
-
-        // Header row count rules (each addition adds 1 extra row vs baseline):
-        //   - Baseline (1 col, K=1):    2 rows = caption + col labels
-        //   - K>1 data fields:          +1 row to repeat data field names per col group
-        //   - N_col>=2 col fields:      +1 row for inner col labels
-        //   - Both combined (N_col=2 AND K>1): +2 rows = 4 total
-        // Verified for the 1×2×2 case against multi_col_K_authored.xlsx
-        // (location ref="A3:O10" firstHeaderRow=1 firstDataRow=4).
-        int headerRows;
-        if (colFieldIndices.Count >= 2 && dataFieldCount > 1)
-            headerRows = 4; // caption + outer col + inner col + data field names
-        else if (colFieldIndices.Count >= 2)
-            headerRows = 3; // caption + outer col labels + inner col labels
-        else if (colFieldIndices.Count > 0)
-            headerRows = dataFieldCount > 1 ? 3 : 2;
-        else
-            headerRows = dataFieldCount > 1 ? 2 : 1;
-
         int height = headerRows + dataRowCount + 1;
 
         var (anchorCol, anchorRow) = ParseCellRef(position);
@@ -396,6 +598,16 @@ internal static class PivotTableHelper
         //   2 row × 1 col × 1 data → multi-row renderer (RenderMultiRowPivot)
         //   1 row × 2 col × 1 data → multi-col renderer (RenderMultiColPivot)
         // Other combinations fall back to empty skeleton with a warning.
+        // N≥3 row or col fields → general tree-based renderer (handles arbitrary depth).
+        // N≤2 cases continue to use the specialized renderers below for byte-level
+        // backward compatibility (regression-tested via test-samples/pivot_baselines).
+        if (rowFieldIndices.Count >= 3 || colFieldIndices.Count >= 3)
+        {
+            RenderGeneralPivot(targetSheet, position, headers, columnData,
+                rowFieldIndices, colFieldIndices, valueFields, filterFieldIndices);
+            return;
+        }
+
         if (rowFieldIndices.Count == 2 && colFieldIndices.Count == 2 && valueFields.Count >= 1)
         {
             RenderMatrixPivot(targetSheet, position, headers, columnData,
@@ -1733,6 +1945,395 @@ internal static class PivotTableHelper
         for (int d = 0; d < K; d++)
             grandRow.AppendChild(MakeNumericCell(grandTotalColPositions[d], currentRowIdx,
                 Reduce(perDataField[d], valueFields[d].func)));
+        sheetData.AppendChild(grandRow);
+
+        // Page filter cells (same logic as the other renderers).
+        if (filterFieldIndices != null && filterFieldIndices.Count > 0)
+        {
+            var requiredHeadroom = filterFieldIndices.Count + 1;
+            if (anchorRow > requiredHeadroom)
+            {
+                var firstFilterRow = anchorRow - requiredHeadroom;
+                for (int fi = 0; fi < filterFieldIndices.Count; fi++)
+                {
+                    var fIdx = filterFieldIndices[fi];
+                    if (fIdx < 0 || fIdx >= headers.Length) continue;
+                    var rowIdx = firstFilterRow + fi;
+                    var filterRow = new Row { RowIndex = (uint)rowIdx };
+                    filterRow.AppendChild(MakeStringCell(anchorColIdx, rowIdx, headers[fIdx]));
+                    filterRow.AppendChild(MakeStringCell(anchorColIdx + 1, rowIdx, "(All)"));
+                    sheetData.InsertAt(filterRow, fi);
+                }
+            }
+        }
+
+        ws.Save();
+    }
+
+    // ==================== General Tree-Based Renderer (N≥3 axis fields) ====================
+
+    /// <summary>
+    /// Render a pivot with arbitrary depth on either axis using AxisTree
+    /// abstraction. Currently engaged for N_row≥3 OR N_col≥3 (the cases that
+    /// the specialized RenderMultiRow/Col/Matrix renderers do not handle).
+    ///
+    /// Layout strategy:
+    ///   - Compact mode: row labels collapse into a single column (col A)
+    ///                   regardless of N_row. firstDataCol = 1.
+    ///   - Each internal row tree node emits an outer-subtotal row before its
+    ///     children. Each leaf tree node emits a leaf row.
+    ///   - Each internal col tree node emits an outer-subtotal col AFTER its
+    ///     children (matching multi-col convention). Each leaf node emits a
+    ///     leaf data col.
+    ///   - K data fields multiply the col area by K (K cells per leaf, K cells
+    ///     per col subtotal, K final grand totals).
+    ///   - Header rows: 1 caption + N_col rows (one per col field level) +
+    ///                  optional 1 data field name row (when K>1) = 1 + N_col + (K>1?1:0)
+    ///
+    /// Cell value semantics: for each (row pos, col pos, dataField d), reduce
+    /// raw values from rows whose row-field tuple matches BOTH the row path
+    /// prefix AND the col path prefix. Subtotal positions widen the prefix
+    /// match (e.g. an outer-row subtotal at depth 1 in a depth-3 row tree
+    /// matches all source rows whose first-field value equals the path[0]).
+    /// </summary>
+    private static void RenderGeneralPivot(
+        WorksheetPart targetSheet, string position,
+        string[] headers, List<string[]> columnData,
+        List<int> rowFieldIndices, List<int> colFieldIndices,
+        List<(int idx, string func, string name)> valueFields,
+        List<int>? filterFieldIndices)
+    {
+        int K = Math.Max(1, valueFields.Count);
+        var rowTree = BuildAxisTree(rowFieldIndices, columnData);
+        var colTree = BuildAxisTree(colFieldIndices, columnData);
+
+        // Walk both trees in display order. Each entry is the absolute display
+        // position relative to the start of the data area.
+        var rowPositions = WalkAxisTree(rowTree, isCol: false).ToList();
+        var colPositions = WalkAxisTree(colTree, isCol: true).ToList();
+
+        // Build per-source-row tuples once so cell value lookups are O(rows × K)
+        // instead of O(rows × cells × N).
+        int srcRowCount = columnData.Count > 0 ? columnData[0].Length : 0;
+        var rowFieldVals = new string[srcRowCount][];
+        var colFieldVals = new string[srcRowCount][];
+        for (int r = 0; r < srcRowCount; r++)
+        {
+            rowFieldVals[r] = new string[rowFieldIndices.Count];
+            colFieldVals[r] = new string[colFieldIndices.Count];
+            for (int l = 0; l < rowFieldIndices.Count; l++)
+            {
+                var fi = rowFieldIndices[l];
+                rowFieldVals[r][l] = (fi >= 0 && fi < columnData.Count && r < columnData[fi].Length)
+                    ? columnData[fi][r] : null!;
+            }
+            for (int l = 0; l < colFieldIndices.Count; l++)
+            {
+                var fi = colFieldIndices[l];
+                colFieldVals[r][l] = (fi >= 0 && fi < columnData.Count && r < columnData[fi].Length)
+                    ? columnData[fi][r] : null!;
+            }
+        }
+
+        // Numeric value cache per data field. Pre-parse so we don't double_parse
+        // every cell access. NaN encodes "not a number / skip".
+        var dataNums = new double[K][];
+        for (int d = 0; d < K; d++)
+        {
+            var dataIdx = valueFields[d].idx;
+            var values = (dataIdx >= 0 && dataIdx < columnData.Count) ? columnData[dataIdx] : Array.Empty<string>();
+            dataNums[d] = new double[srcRowCount];
+            for (int r = 0; r < srcRowCount; r++)
+            {
+                if (r >= values.Length || string.IsNullOrEmpty(values[r])
+                    || !double.TryParse(values[r], System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var n))
+                    dataNums[d][r] = double.NaN;
+                else
+                    dataNums[d][r] = n;
+            }
+        }
+
+        double Reduce(IEnumerable<double> values, string func)
+        {
+            var arr = values as double[] ?? values.ToArray();
+            if (arr.Length == 0) return 0;
+            return func.ToLowerInvariant() switch
+            {
+                "sum" => arr.Sum(),
+                "count" => arr.Length,
+                "average" or "avg" => arr.Average(),
+                "min" => arr.Min(),
+                "max" => arr.Max(),
+                _ => arr.Sum()
+            };
+        }
+
+        // Compute the value at (rowNode, colNode, dataFieldIdx).
+        // Subtotal nodes have shorter Path arrays than leaves; the prefix match
+        // automatically widens the set of source rows that contribute.
+        double ComputeCell(AxisNode rowNode, AxisNode colNode, int d)
+        {
+            var rPath = rowNode.Path;
+            var cPath = colNode.Path;
+            var collected = new List<double>();
+            for (int r = 0; r < srcRowCount; r++)
+            {
+                bool match = true;
+                for (int l = 0; l < rPath.Length && match; l++)
+                    if (rowFieldVals[r][l] != rPath[l]) match = false;
+                for (int l = 0; l < cPath.Length && match; l++)
+                    if (colFieldVals[r][l] != cPath[l]) match = false;
+                if (!match) continue;
+
+                // Skip rows where ANY row-axis or col-axis field is empty (mirrors
+                // the specialized renderers' validity gate).
+                for (int l = 0; l < rowFieldIndices.Count && match; l++)
+                    if (string.IsNullOrEmpty(rowFieldVals[r][l])) match = false;
+                for (int l = 0; l < colFieldIndices.Count && match; l++)
+                    if (string.IsNullOrEmpty(colFieldVals[r][l])) match = false;
+                if (!match) continue;
+
+                var v = dataNums[d][r];
+                if (!double.IsNaN(v)) collected.Add(v);
+            }
+            return Reduce(collected, valueFields[d].func);
+        }
+
+        bool HasAnyValue(AxisNode rowNode, AxisNode colNode)
+        {
+            var rPath = rowNode.Path;
+            var cPath = colNode.Path;
+            for (int r = 0; r < srcRowCount; r++)
+            {
+                bool match = true;
+                for (int l = 0; l < rPath.Length && match; l++)
+                    if (rowFieldVals[r][l] != rPath[l]) match = false;
+                for (int l = 0; l < cPath.Length && match; l++)
+                    if (colFieldVals[r][l] != cPath[l]) match = false;
+                if (!match) continue;
+                for (int d = 0; d < K; d++)
+                    if (!double.IsNaN(dataNums[d][r])) return true;
+            }
+            return false;
+        }
+
+        // ===== Write cells =====
+        var (anchorCol, anchorRow) = ParseCellRef(position);
+        var anchorColIdx = ColToIndex(anchorCol);
+        var totalLabel = "总计";
+
+        var ws = targetSheet.Worksheet
+            ?? throw new InvalidOperationException("Target worksheet has no Worksheet element");
+        var sheetData = ws.GetFirstChild<SheetData>();
+        if (sheetData == null)
+        {
+            sheetData = new SheetData();
+            ws.AppendChild(sheetData);
+        }
+
+        // Pre-compute absolute col indices for every col position × data field.
+        // colPositions does not include the grand total column — that's tracked
+        // separately so the writer doesn't accidentally include it inside the
+        // per-outer subtotal block.
+        int colCells = colPositions.Count * K;
+        int firstDataCol = anchorColIdx + 1;
+        var colIdxByPosition = new int[colPositions.Count, K];
+        for (int p = 0; p < colPositions.Count; p++)
+            for (int d = 0; d < K; d++)
+                colIdxByPosition[p, d] = firstDataCol + p * K + d;
+        int grandTotalColStart = firstDataCol + colCells;
+
+        // Header rows. Layout depends on (N_col, K):
+        //   - 1 caption row (row 0)
+        //   - N_col header rows (one per col field level, top→bottom = outer→inner)
+        //   - Optionally 1 data-field-name row when K>1
+        int headerRows = 1 + Math.Max(1, colFieldIndices.Count) + (K > 1 ? 1 : 0);
+
+        // Row 0 (caption): col field caption (the outermost col field name) at
+        // first data col position. For K=1 the row-label col also gets the
+        // single data field name.
+        var captionRow = new Row { RowIndex = (uint)anchorRow };
+        if (K == 1)
+            captionRow.AppendChild(MakeStringCell(anchorColIdx, anchorRow, valueFields[0].name));
+        if (colFieldIndices.Count > 0)
+            captionRow.AppendChild(MakeStringCell(firstDataCol, anchorRow,
+                headers[colFieldIndices[0]]));
+        sheetData.AppendChild(captionRow);
+
+        // Rows 1..N_col (col field header rows). For each level L (1..N_col), the
+        // L-th col field's labels are written at the first leaf col of every node
+        // at depth L in the col tree. Subtotal cols at level L get their label
+        // here too (for the outermost level when K>1, we put the subtotal labels
+        // in the outermost header row, matching the multi-col K>1 ground truth).
+        for (int level = 1; level <= colFieldIndices.Count; level++)
+        {
+            int headerRowIdx = anchorRow + level;
+            var headerRow = new Row { RowIndex = (uint)headerRowIdx };
+            // Row label column header on the LAST col-field row carries the
+            // outermost row field name (when K=1) or stays empty (when K>1
+            // because the data-field-name row below carries it).
+            if (level == colFieldIndices.Count && K == 1 && rowFieldIndices.Count > 0)
+                headerRow.AppendChild(MakeStringCell(anchorColIdx, headerRowIdx, headers[rowFieldIndices[0]]));
+
+            for (int p = 0; p < colPositions.Count; p++)
+            {
+                var (node, isLeaf, isSubtotal) = colPositions[p];
+                // Internal-node label appears at THIS row only when level matches
+                // the node's depth, AND it appears at the FIRST data col of its
+                // descendants (i.e. the position of the first leaf in its subtree).
+                if (isSubtotal)
+                {
+                    // For each internal node N at depth L, the subtotal label
+                    // pattern depends on which row we're on:
+                    //   - At header row L (matching the node's depth): emit the
+                    //     parent-style label "<parent path tail>" at the first
+                    //     leaf col of N's subtree.
+                    //   - At the LAST col-field header row (level == N_col): emit
+                    //     the "<node label> Total" at THIS subtotal col position.
+                    if (level == node.Depth)
+                    {
+                        // Subtotal cols don't carry inner labels; the label here
+                        // is the node's own label, written at THIS subtotal col.
+                        // Match the multi-col single-data convention: "<outer> Total".
+                        if (K == 1)
+                            headerRow.AppendChild(MakeStringCell(colIdxByPosition[p, 0], headerRowIdx,
+                                node.Label + " Total"));
+                        else
+                        {
+                            // Multi-data: emit per-data-field labels.
+                            for (int d = 0; d < K; d++)
+                                headerRow.AppendChild(MakeStringCell(colIdxByPosition[p, d], headerRowIdx,
+                                    $"{node.Label} {valueFields[d].name}"));
+                        }
+                    }
+                    continue;
+                }
+
+                // Leaf node: emit the label corresponding to THIS header level.
+                // Only at the level where the node's path-element matches (depth).
+                if (level <= node.Path.Length)
+                {
+                    // Write at the FIRST leaf of any contiguous group sharing the
+                    // same prefix at this level. Approximation: write at every
+                    // leaf, but Excel deduplicates visually via colItems metadata.
+                    // Simpler implementation: just write the label at this leaf
+                    // for the level matching its current depth in the tree.
+                    if (level == node.Path.Length)
+                    {
+                        // Innermost level for this leaf: emit at first data col.
+                        headerRow.AppendChild(MakeStringCell(colIdxByPosition[p, 0], headerRowIdx, node.Label));
+                    }
+                    else
+                    {
+                        // Outer ancestor levels: emit the ancestor label only at
+                        // the first leaf of the ancestor's subtree (positions
+                        // sharing path[level-1] = ancestor's label, AND this is
+                        // the first such position).
+                        // Find the previous position; if its path[level-1] differs
+                        // OR there is no previous, this is the start of a new group.
+                        bool isFirst = (p == 0);
+                        if (!isFirst)
+                        {
+                            var (prevNode, _, prevIsSub) = colPositions[p - 1];
+                            // Skip subtotal cols when checking "previous leaf in group"
+                            // — subtotals belong to a different ancestor than their
+                            // following leaves.
+                            if (prevIsSub) isFirst = true;
+                            else
+                            {
+                                var prev = prevNode;
+                                if (level - 1 >= prev.Path.Length || level - 1 >= node.Path.Length
+                                    || prev.Path[level - 1] != node.Path[level - 1])
+                                    isFirst = true;
+                            }
+                        }
+                        if (isFirst && level - 1 < node.Path.Length)
+                            headerRow.AppendChild(MakeStringCell(colIdxByPosition[p, 0], headerRowIdx,
+                                node.Path[level - 1]));
+                    }
+                }
+            }
+
+            // Grand total column header label appears at the LAST col header row
+            // (or in the K>1 case it's spread across all data field columns).
+            if (level == colFieldIndices.Count)
+            {
+                if (K == 1)
+                    headerRow.AppendChild(MakeStringCell(grandTotalColStart, headerRowIdx, totalLabel));
+                else
+                    for (int d = 0; d < K; d++)
+                        headerRow.AppendChild(MakeStringCell(grandTotalColStart + d, headerRowIdx,
+                            $"Total {valueFields[d].name}"));
+            }
+            sheetData.AppendChild(headerRow);
+        }
+
+        // Optional data field name row (K>1).
+        if (K > 1)
+        {
+            int dfRowIdx = anchorRow + headerRows - 1;
+            var dfRow = new Row { RowIndex = (uint)dfRowIdx };
+            if (rowFieldIndices.Count > 0)
+                dfRow.AppendChild(MakeStringCell(anchorColIdx, dfRowIdx, headers[rowFieldIndices[0]]));
+            for (int p = 0; p < colPositions.Count; p++)
+            {
+                var (_, isLeaf, isSubtotal) = colPositions[p];
+                if (isSubtotal) continue; // Subtotal cols already labelled in their header row above.
+                for (int d = 0; d < K; d++)
+                    dfRow.AppendChild(MakeStringCell(colIdxByPosition[p, d], dfRowIdx, valueFields[d].name));
+            }
+            sheetData.AppendChild(dfRow);
+        }
+
+        // Data + grand total rows.
+        int firstDataRowIdx = anchorRow + headerRows;
+        for (int rp = 0; rp < rowPositions.Count; rp++)
+        {
+            var (rowNode, rIsLeaf, rIsSubtotal) = rowPositions[rp];
+            int rowIdx = firstDataRowIdx + rp;
+            var row = new Row { RowIndex = (uint)rowIdx };
+            row.AppendChild(MakeStringCell(anchorColIdx, rowIdx, rowNode.Label));
+
+            for (int cp = 0; cp < colPositions.Count; cp++)
+            {
+                var (colNode, cIsLeaf, cIsSubtotal) = colPositions[cp];
+                bool any = HasAnyValue(rowNode, colNode);
+                for (int d = 0; d < K; d++)
+                {
+                    var v = ComputeCell(rowNode, colNode, d);
+                    // Skip 0-value cells when there are no underlying values to
+                    // mirror Excel's behavior of leaving sparse intersections blank.
+                    if (any || v != 0)
+                        row.AppendChild(MakeNumericCell(colIdxByPosition[cp, d], rowIdx, v));
+                }
+            }
+
+            // Grand total cells (per data field) — the row's value across all cols.
+            var grandRowNode = new AxisNode(string.Empty, 0, Array.Empty<string>());
+            for (int d = 0; d < K; d++)
+                row.AppendChild(MakeNumericCell(grandTotalColStart + d, rowIdx,
+                    ComputeCell(rowNode, grandRowNode, d)));
+            sheetData.AppendChild(row);
+        }
+
+        // Final grand total row.
+        int grandRowIdx = firstDataRowIdx + rowPositions.Count;
+        var grandRow = new Row { RowIndex = (uint)grandRowIdx };
+        grandRow.AppendChild(MakeStringCell(anchorColIdx, grandRowIdx, totalLabel));
+        var grandRowNodeFinal = new AxisNode(string.Empty, 0, Array.Empty<string>());
+        for (int cp = 0; cp < colPositions.Count; cp++)
+        {
+            var (colNode, _, _) = colPositions[cp];
+            for (int d = 0; d < K; d++)
+            {
+                var v = ComputeCell(grandRowNodeFinal, colNode, d);
+                grandRow.AppendChild(MakeNumericCell(colIdxByPosition[cp, d], grandRowIdx, v));
+            }
+        }
+        for (int d = 0; d < K; d++)
+            grandRow.AppendChild(MakeNumericCell(grandTotalColStart + d, grandRowIdx,
+                ComputeCell(grandRowNodeFinal, grandRowNodeFinal, d)));
         sheetData.AppendChild(grandRow);
 
         // Page filter cells (same logic as the other renderers).
