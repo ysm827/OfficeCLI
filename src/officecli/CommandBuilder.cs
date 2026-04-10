@@ -158,15 +158,55 @@ static partial class CommandBuilder
     }
 
     // ==================== Helper: try forwarding to resident ====================
+    //
+    // Two-step protocol (CONSISTENCY(resident-two-step): same shape as
+    // CommandBuilder.Batch.cs's resident branch):
+    //   1. Ping-pipe probe via TryConnect — fast (100ms) and isolated from the
+    //      main command queue, so it stays responsive even under flood. Tells
+    //      us definitively whether a resident owns this file.
+    //   2. If yes, send the command on the main pipe with a generous connect
+    //      timeout + a few retries. If the send STILL fails, surface a
+    //      distinct "busy" error (exit code 3) instead of falling back to
+    //      DocumentHandlerFactory.Open — the old silent fallback could race
+    //      the live resident and lose writes.
+    //   3. If no resident, return null so the caller opens the file directly.
+    //
+    // Exit code 3 is reserved for "resident is alive but couldn't deliver the
+    // command" so callers can distinguish it from a command-level failure.
+    private const int ResidentBusyExitCode = 3;
+    private const int ResidentBusyConnectTimeoutMs = 30000;
+    private const int ResidentBusyMaxRetries = 3;
+
     internal static int? TryResident(string filePath, Action<ResidentRequest> configure, bool json = false)
     {
+        // Step 1: does a resident own this file? Probe via the -ping pipe,
+        // which is never serialized behind main-pipe commands.
+        if (!ResidentClient.TryConnect(filePath, out _))
+            return null; // no resident → caller falls back to direct file access
+
         var request = new ResidentRequest();
         configure(request);
         if (json) request.Json = true;
 
-        var response = ResidentClient.TrySend(filePath, request);
+        // Step 2: resident is confirmed alive — wait for our turn in the main
+        // pipe queue. Do NOT silently fall back on failure; letting a second
+        // writer touch the file while the resident holds it in memory loses
+        // data on the resident's eventual save.
+        var response = ResidentClient.TrySend(
+            filePath, request,
+            maxRetries: ResidentBusyMaxRetries,
+            connectTimeoutMs: ResidentBusyConnectTimeoutMs);
+
         if (response == null)
-            return null;
+        {
+            var fileName = Path.GetFileName(filePath);
+            var msg = $"Resident for {fileName} is running but the command could not be delivered (main pipe busy or unresponsive). Retry, or run 'officecli close {fileName}' and try again.";
+            if (json)
+                Console.WriteLine(OutputFormatter.WrapEnvelopeError(msg));
+            else
+                Console.Error.WriteLine($"Error: {msg}");
+            return ResidentBusyExitCode;
+        }
 
         if (json)
         {

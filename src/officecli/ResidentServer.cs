@@ -19,6 +19,10 @@ public class ResidentServer : IDisposable
     private readonly TimeSpan _idleTimeout = TimeSpan.FromMinutes(12);
     private CancellationTokenSource _idleCts = new();
     private bool _disposed;
+    // Shared shutdown Task so __close__ and Dispose coordinate on a single
+    // ordered teardown: drain in-flight command → dispose handler → ack client.
+    private readonly object _shutdownLock = new();
+    private Task? _shutdownTask;
 
     public string PipeName => _pipeName;
 
@@ -49,28 +53,50 @@ public class ResidentServer : IDisposable
         // Start idle watchdog
         var idleTask = RunIdleWatchdogAsync(token);
 
-        // Main command loop - accept connections concurrently, serialize command execution
-        while (!token.IsCancellationRequested)
+        // Main command loop - accept connections concurrently, serialize
+        // command execution. CONSISTENCY(pipe-precreate): same pre-create
+        // pattern as RunPingResponderAsync (see BUG-FUZZER-R6-B-01). Creating
+        // the next NamedPipeServerStream BEFORE handing off the accepted one
+        // closes the window where no instance is listening — without this,
+        // client bursts (e.g. 50 concurrent `officecli get`) race into the
+        // gap and get ECONNREFUSED on macOS, which used to be silently hidden
+        // by TryResident's fall-back path but now (correctly) surfaces as
+        // "resident busy". Both instances coexist via MaxAllowedServerInstances
+        // while the handler runs.
+        NamedPipeServerStream NewMainServer() => new(_pipeName, PipeDirection.InOut,
+            NamedPipeServerStream.MaxAllowedServerInstances,
+            PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+
+        var currentMain = NewMainServer();
+        try
         {
-            var server = new NamedPipeServerStream(_pipeName, PipeDirection.InOut,
-                NamedPipeServerStream.MaxAllowedServerInstances,
-                PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
-            try
+            while (!token.IsCancellationRequested)
             {
-                await server.WaitForConnectionAsync(token);
-                // Handle client asynchronously so we can accept the next connection
-                _ = HandleClientWithLockAsync(server, token);
+                try
+                {
+                    await currentMain.WaitForConnectionAsync(token);
+                    // Hand over the accepted instance and immediately stand
+                    // up a replacement so the pipe is never unlistened while
+                    // the handler runs.
+                    var accepted = currentMain;
+                    currentMain = NewMainServer();
+                    _ = HandleClientWithLockAsync(accepted, token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Resident error: {ex.Message}");
+                    // currentMain is still the pre-created replacement; it is
+                    // still valid for the next iteration's WaitForConnectionAsync.
+                }
             }
-            catch (OperationCanceledException)
-            {
-                await server.DisposeAsync();
-                break;
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"Resident error: {ex.Message}");
-                await server.DisposeAsync();
-            }
+        }
+        finally
+        {
+            try { await currentMain.DisposeAsync(); } catch { }
         }
 
         // Both tasks observe the same token; swallow cancellation on shutdown
@@ -158,16 +184,28 @@ public class ResidentServer : IDisposable
                             }
                             else if (request?.Command == "__close__")
                             {
-                                var response = MakeResponse(0, "Closing resident.", "");
-                                await WriteLineToPipeAsync(accepted, response, token);
-                                _cts.Cancel();
-                                // Kick the main pipe listener out of WaitForConnectionAsync
-                                try
+                                // BUG(close-race): previously we sent the "Closing resident." ack
+                                // immediately and let handler.Dispose() run afterwards inside the
+                                // outer `using var server` block. The client observed success while
+                                // the resident was still finalizing writes and holding the file
+                                // open, so a racing `rm + open` on the same path could attach new
+                                // writes to the dying resident (holding the deleted inode) and
+                                // lose them on save. Fix: fully shut down the handler BEFORE
+                                // acking, so the file is guaranteed released when the client sees
+                                // success. ShutdownAsync is idempotent — Dispose awaits the same
+                                // cached task and is a no-op after this path completes.
+                                try { await ShutdownAsync(); }
+                                catch (Exception ex)
                                 {
-                                    using var kick = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut);
-                                    kick.Connect(500);
+                                    Console.Error.WriteLine($"Shutdown error during __close__: {ex.Message}");
                                 }
-                                catch { }
+
+                                var response = MakeResponse(0, "Closing resident.", "");
+                                // ShutdownAsync cancelled `token`; use a fresh CTS for the response
+                                // write so the client still gets its acknowledgement.
+                                using var writeCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                                try { await WriteLineToPipeAsync(accepted, response, writeCts.Token); }
+                                catch { /* client may have disconnected; nothing to do */ }
                                 return;
                             }
                         }
@@ -824,39 +862,89 @@ public class ResidentServer : IDisposable
 
     public void Dispose()
     {
-        if (!_disposed)
+        if (_disposed) return;
+        _disposed = true;
+
+        // Delegate to the shared shutdown task. If __close__ already drove
+        // shutdown, this just awaits the cached Task (no-op). If not (e.g.
+        // idle timeout, SIGTERM, crash cleanup), this runs the full ordered
+        // teardown. Watchdog: if shutdown exceeds 10 min, force exit so the
+        // process can never hang on a stuck handler dispose.
+        try
         {
-            _disposed = true;
-            _cts.Cancel();
-
-            // Kick both pipe listeners out of WaitForConnectionAsync so RunAsync can exit.
-            // Without this, Dispose() after SIGKILL/crash leaves pipes blocked indefinitely.
-            KickPipe(_pipeName);
-            KickPipe(_pipeName + "-ping");
-
-            // Run the entire shutdown sequence on a background thread.
-            // A watchdog on the calling thread ensures the process always exits.
-            var shutdownTask = Task.Run(() =>
-            {
-                // Wait for any in-flight command to finish (preserves data integrity)
-                _commandLock.Wait();
-                _commandLock.Release();
-
-                try { _handler.Dispose(); }
-                catch (Exception ex) { Console.Error.WriteLine($"Warning: handler dispose error: {ex.Message}"); }
-
-                _commandLock.Dispose();
-            });
-
-            // Watchdog: if shutdown takes longer than 10min, force exit
-            if (!shutdownTask.Wait(TimeSpan.FromMinutes(10)))
+            if (!ShutdownAsync().Wait(TimeSpan.FromMinutes(10)))
             {
                 Console.Error.WriteLine("Warning: shutdown timed out after 10 minutes, forcing exit.");
                 Environment.Exit(1);
             }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Warning: shutdown error: {ex.Message}");
+        }
 
-            _cts.Dispose();
-            _idleCts.Dispose();
+        try { _commandLock.Dispose(); } catch { }
+        try { _cts.Dispose(); } catch { }
+        try { _idleCts.Dispose(); } catch { }
+    }
+
+    /// <summary>
+    /// Idempotent, ordered resident shutdown. Safe to call from any thread and
+    /// from both __close__ (ping pipe) and Dispose (process teardown) — all
+    /// callers await the same cached <see cref="Task"/>. Steps:
+    ///   1. Cancel the main loop / ping responder token (stop accepting new work)
+    ///   2. Kick both pipe listeners out of WaitForConnectionAsync
+    ///   3. Wait for any in-flight command to drain (preserves data integrity)
+    ///   4. Dispose the document handler (persists in-memory changes to disk
+    ///      and releases the file handle)
+    /// Step 4 must complete before the __close__ handler returns, otherwise
+    /// the client can race a follow-up rm/open against a still-alive resident
+    /// and lose writes.
+    /// </summary>
+    private Task ShutdownAsync()
+    {
+        lock (_shutdownLock)
+        {
+            return _shutdownTask ??= Task.Run(DoShutdownAsync);
+        }
+    }
+
+    private async Task DoShutdownAsync()
+    {
+        // 1. Stop accepting new connections. Swallow ObjectDisposedException
+        //    in case Dispose already raced us here.
+        try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+
+        // 2. Kick both pipe listeners out of WaitForConnectionAsync so the
+        //    loops unwind promptly. Cross-platform: Windows named pipes and
+        //    macOS/Linux CoreFxPipe (unix sockets) both honour Connect kicks.
+        KickPipe(_pipeName);
+        KickPipe(_pipeName + "-ping");
+
+        // 3. Drain any currently-executing command. Typical command takes
+        //    tens of ms (reads) up to a few hundred ms (writes); the 10 min
+        //    bound matches the outer Dispose watchdog so a stuck command is
+        //    caught by exactly one tier, not two.
+        try
+        {
+            if (await _commandLock.WaitAsync(TimeSpan.FromMinutes(10)))
+            {
+                try { _commandLock.Release(); } catch (SemaphoreFullException) { }
+            }
+            else
+            {
+                Console.Error.WriteLine("Warning: timeout waiting for in-flight command to drain.");
+            }
+        }
+        catch (ObjectDisposedException) { /* _commandLock already disposed */ }
+
+        // 4. Dispose the handler. This is the slow, load-bearing step — it
+        //    writes the in-memory OpenXML tree back to disk and closes the
+        //    file handle. Must complete before __close__ acks the client.
+        try { _handler.Dispose(); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Warning: handler dispose error: {ex.Message}");
         }
     }
 

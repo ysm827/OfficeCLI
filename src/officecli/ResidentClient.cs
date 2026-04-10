@@ -47,7 +47,15 @@ public static class ResidentClient
     /// Send a command to the resident server in a single connection.
     /// Returns null if no resident is running or the file doesn't match.
     /// </summary>
-    public static ResidentResponse? TrySend(string filePath, ResidentRequest request, int maxRetries = 0)
+    /// <param name="connectTimeoutMs">
+    /// How long to wait for the server to accept the pipe connection. Default
+    /// 100ms suits the "is a resident listening at all?" fast-fail path; when
+    /// the caller has already confirmed the resident is alive (e.g. via
+    /// <see cref="TryConnect"/>), pass a longer value (seconds) so the command
+    /// waits for its turn in the serialized command queue instead of silently
+    /// dropping under load.
+    /// </param>
+    public static ResidentResponse? TrySend(string filePath, ResidentRequest request, int maxRetries = 0, int connectTimeoutMs = 100)
     {
         var pipeName = ResidentServer.GetPipeName(filePath);
         for (int attempt = 0; attempt <= maxRetries; attempt++)
@@ -55,7 +63,7 @@ public static class ResidentClient
             try
             {
                 using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut);
-                client.Connect(100); // 100ms — matches TryConnect's ping timeout; no resident → fast fail instead of 3 × 1000ms retry
+                client.Connect(connectTimeoutMs);
 
                 var json = System.Text.Json.JsonSerializer.Serialize(request, ResidentJsonContext.Default.ResidentRequest);
                 PipeWriteLine(client, json);

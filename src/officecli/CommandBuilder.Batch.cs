@@ -126,11 +126,15 @@ static partial class CommandBuilder
                         ["force"] = force.ToString()
                     }
                 };
-                var response = ResidentClient.TrySend(file.FullName, req, maxRetries: 3);
+                // CONSISTENCY(resident-two-step): long connectTimeoutMs so the
+                // batch waits for its turn in the main-pipe queue instead of
+                // silently timing out under load. Matches TryResident in
+                // CommandBuilder.cs.
+                var response = ResidentClient.TrySend(file.FullName, req, maxRetries: 3, connectTimeoutMs: 30000);
                 if (response == null)
                 {
-                    Console.Error.WriteLine("Failed to send batch to resident process");
-                    return 1;
+                    Console.Error.WriteLine($"Resident for {file.Name} is running but the batch could not be delivered (main pipe busy or unresponsive). Retry, or run 'officecli close {file.Name}' and try again.");
+                    return 3;
                 }
                 // The resident returns the formatted batch output directly
                 if (!string.IsNullOrEmpty(response.Stdout))
