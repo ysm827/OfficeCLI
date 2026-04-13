@@ -549,60 +549,96 @@
         if (!_chartDrag.active) {
             if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
             _chartDrag.active = true;
-            _chartDrag.el.style.position = 'relative';
+            // Leave a dashed placeholder at original position
+            var placeholder = document.createElement('div');
+            placeholder.style.cssText = 'width:' + _chartDrag.el.offsetWidth + 'px;height:' +
+                _chartDrag.el.offsetHeight + 'px;border:2px dashed #217346;background:rgba(33,115,70,0.05);border-radius:4px;';
+            _chartDrag.el.parentNode.insertBefore(placeholder, _chartDrag.el);
+            _chartDrag.placeholder = placeholder;
+            var fixedRect = _chartDrag.el.getBoundingClientRect();
+            _chartDrag.origFixedLeft = fixedRect.left;
+            _chartDrag.origFixedTop = fixedRect.top;
+            _chartDrag.el.style.position = 'fixed';
+            _chartDrag.el.style.left = fixedRect.left + 'px';
+            _chartDrag.el.style.top = fixedRect.top + 'px';
+            _chartDrag.el.style.width = _chartDrag.el.offsetWidth + 'px';
             _chartDrag.el.style.zIndex = '9999';
-            _chartDrag.el.style.opacity = '0.85';
+            _chartDrag.el.style.opacity = '0.7';
             _chartDrag.el.style.cursor = 'grabbing';
+            _chartDrag.el.style.pointerEvents = 'none';
+            _chartDrag.el.style.boxShadow = '0 4px 20px rgba(0,0,0,0.15)';
         }
-        _chartDrag.el.style.left = dx + 'px';
-        _chartDrag.el.style.top = dy + 'px';
+        _chartDrag.el.style.left = (_chartDrag.origFixedLeft + dx) + 'px';
+        _chartDrag.el.style.top = (_chartDrag.origFixedTop + dy) + 'px';
     }, true);
     document.addEventListener('mouseup', function(e) {
         if (!_chartDrag) return;
         var cd = _chartDrag;
         _chartDrag = null;
         if (!cd.active) return; // no drag, let click handle it
-        // Reset visual
+        // Reset visual + remove placeholder
+        if (cd.placeholder) cd.placeholder.remove();
         cd.el.style.position = '';
         cd.el.style.zIndex = '';
         cd.el.style.opacity = '';
         cd.el.style.cursor = '';
+        cd.el.style.pointerEvents = '';
         cd.el.style.left = '';
         cd.el.style.top = '';
+        cd.el.style.width = '';
+        cd.el.style.boxShadow = '';
         var dx = e.clientX - cd.startX;
         var dy = e.clientY - cd.startY;
         if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
-        // Find the cell under the drop point to determine target row/col index.
-        // The chart x/y in set command are 0-based col/row indices.
-        var dropEl = document.elementFromPoint(e.clientX, e.clientY);
-        var dropTd = dropEl ? dropEl.closest('td[data-path], th[data-path]') : null;
-        if (dropTd) {
-            var dp = dropTd.getAttribute('data-path');
-            // Try cell path: /{Sheet}/{Col}{Row}
-            var cm = dp ? dp.match(/^(\/[^/]+)\/([A-Za-z]+)(\d+)$/) : null;
-            if (cm) {
-                var col = 0;
-                for (var i = 0; i < cm[2].length; i++) col = col * 26 + (cm[2].toUpperCase().charCodeAt(i) - 64);
-                var row = parseInt(cm[3], 10);
-                fetch('/api/edit', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: cd.path, props: {
-                        x: String(col - 1),  // 0-based col index
-                        y: String(row - 1)    // 0-based row index
-                    }})
-                }).catch(function() {});
-            }
-            // Try row header: /{Sheet}/row[N]
-            var rm = dp ? dp.match(/^(\/[^/]+)\/row\[(\d+)\]$/) : null;
-            if (rm) {
-                fetch('/api/edit', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: cd.path, props: { y: String(parseInt(rm[2], 10) - 1) }})
-                }).catch(function() {});
+        // Estimate row/col delta from pixel offset.
+        // Average row height ≈ 20px, average col width ≈ 64px (from default Excel sizing).
+        // Find actual average from visible row headers and col headers.
+        var rowHeaders = document.querySelectorAll('.sheet-content.active th.row-header');
+        var colHeaders = document.querySelectorAll('.sheet-content.active th.col-header');
+        var avgRowH = 20, avgColW = 64;
+        if (rowHeaders.length >= 2) {
+            var first = rowHeaders[0].getBoundingClientRect();
+            var last = rowHeaders[rowHeaders.length - 1].getBoundingClientRect();
+            avgRowH = (last.top - first.top) / (rowHeaders.length - 1);
+        }
+        if (colHeaders.length >= 2) {
+            var first = colHeaders[0].getBoundingClientRect();
+            var last = colHeaders[colHeaders.length - 1].getBoundingClientRect();
+            avgColW = (last.left - first.left) / (colHeaders.length - 1);
+        }
+        var dRows = Math.round(dy / Math.max(avgRowH, 1));
+        var dCols = Math.round(dx / Math.max(avgColW, 1));
+        if (dRows === 0 && dCols === 0) return;
+        // Send delta as relative move: current + delta. We use a special
+        // "dx"/"dy" convention — but the set handler expects absolute indices.
+        // Read current anchor from the chart's data-path context: find the
+        // chart's position in the table by looking at its parent <tr>.
+        var tr = cd.el.closest('tr[data-row]');
+        var currentRow = 0;
+        if (tr) {
+            var drAttr = tr.getAttribute('data-row');
+            // data-row format: "sheetIdx-rowNum"
+            var parts = drAttr ? drAttr.split('-') : [];
+            if (parts.length >= 2) currentRow = parseInt(parts[1], 10) - 1; // 0-based
+        }
+        // For column, estimate from chart's horizontal position
+        var currentCol = 0;
+        if (colHeaders.length > 0) {
+            var chartLeft = cd.el.getBoundingClientRect().left;
+            for (var i = 0; i < colHeaders.length; i++) {
+                if (colHeaders[i].getBoundingClientRect().left <= chartLeft) currentCol = i;
             }
         }
+        var newRow = Math.max(0, currentRow + dRows);
+        var newCol = Math.max(0, currentCol + dCols);
+        fetch('/api/edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: cd.path, props: {
+                x: String(newCol),
+                y: String(newRow)
+            }})
+        }).catch(function() {});
         _suppressNextClick = true;
     }, true);
 
