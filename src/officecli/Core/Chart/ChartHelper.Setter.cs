@@ -204,8 +204,21 @@ internal static partial class ChartHelper
                     var plotArea2 = chart.GetFirstChild<C.PlotArea>();
                     if (plotArea2 == null) { unsupported.Add(key); break; }
 
-                    // Doughnut does NOT support dLblPos at all — skip entirely
-                    if (plotArea2.GetFirstChild<C.DoughnutChart>() != null) break;
+                    // dLblPos is NOT supported by doughnut, area, radar, or stock charts — skip entirely
+                    if (plotArea2.GetFirstChild<C.DoughnutChart>() != null
+                        || plotArea2.GetFirstChild<C.AreaChart>() != null
+                        || plotArea2.GetFirstChild<C.Area3DChart>() != null
+                        || plotArea2.GetFirstChild<C.RadarChart>() != null
+                        || plotArea2.GetFirstChild<C.StockChart>() != null) break;
+
+                    // Combo charts (bar+line in same plot area) have incompatible dLblPos
+                    // value sets — bar supports inEnd/inBase/outEnd but not t/b/l/r, while
+                    // line supports t/b/l/r but not inEnd/inBase/outEnd. Only 'ctr' is
+                    // universally valid. Skip entirely for combo charts.
+                    var chartGroupCount = plotArea2.ChildElements.Count(
+                        e => e is C.BarChart or C.Bar3DChart or C.LineChart or C.Line3DChart
+                            or C.ScatterChart or C.BubbleChart);
+                    if (chartGroupCount > 1) break;
 
                     // Pie only supports: bestFit, center, insideEnd, insideBase
                     var isPie = plotArea2.GetFirstChild<C.PieChart>() != null
