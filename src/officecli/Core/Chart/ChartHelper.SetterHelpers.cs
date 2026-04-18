@@ -465,7 +465,7 @@ internal static partial class ChartHelper
                 break;
             }
 
-            case "gradient":
+            case "gradient" or "gradientfill":
                 ApplySeriesGradient(ser, value);
                 break;
 

@@ -375,7 +375,7 @@ internal static partial class ChartHelper
         "linewidth", "linedash", "dash", "marker", "markers", "markersize",
         "style", "styleid",
         "transparency", "opacity", "alpha",
-        "gradient", "gradients",
+        "gradient", "gradients", "gradientfill",
         "trendline",
         "secondaryaxis", "secondary",
         "referenceline", "refline", "targetline",
@@ -443,8 +443,31 @@ internal static partial class ChartHelper
         var lower = key.ToLowerInvariant();
         foreach (var prefix in DeferredPrefixes)
             if (lower.StartsWith(prefix)) return true;
+        // CONSISTENCY(chart-series-color): select per-series dotted keys
+        // route through HandleSeriesDottedProperty at SetChartProperties
+        // time. Only visual-effect subkeys are deferred here; `.name`,
+        // `.values`, `.categories`, `.ref`, `.valuesRef`, `.categoriesRef`,
+        // `.color` are consumed at build time by ParseSeriesData /
+        // ParseSeriesColors and must NOT be deferred (double-apply /
+        // literal-expansion regressions).
+        if (TryParseSeriesDottedKey(key, out _, out var sProp)
+            && DeferredSeriesSubkeys.Contains(sProp)) return true;
         return false;
     }
+
+    // Per-series dotted subkeys that route through HandleSeriesDottedProperty
+    // during SetChartProperties (post-build). See IsDeferredKey.
+    private static readonly HashSet<string> DeferredSeriesSubkeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "gradient", "gradientfill",
+        "smooth", "trendline", "marker", "markersize",
+        "invertifneg", "invertifnegative",
+        "errbars", "errorbars",
+        "explosion", "explode",
+        "linewidth", "linedash", "dash",
+        "shadow", "outline",
+        "alpha", "transparency",
+    };
 
     // ==================== Chart Type Builders ====================
 

@@ -615,7 +615,11 @@ internal static partial class ChartHelper
                 }
 
                 // ---- #6 Gradient fill ----
-                case "gradient":
+                // CONSISTENCY(gradient-fill-alias): accept `gradientFill=` as an
+                // alias for `gradient=` so chart vocabulary matches shape/textbox
+                // (ExcelHandler.Add.cs line 1931 / Set.cs line 727 use
+                // BuildShapeGradientFill keyed on `gradientFill`).
+                case "gradient" or "gradientfill":
                 {
                     var plotArea2 = chart.GetFirstChild<C.PlotArea>();
                     if (plotArea2 == null) { unsupported.Add(key); break; }
