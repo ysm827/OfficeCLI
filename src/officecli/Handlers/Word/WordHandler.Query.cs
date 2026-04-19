@@ -1617,6 +1617,40 @@ public partial class WordHandler
                         }
                     }
                 }
+                else if (isRunSelector)
+                {
+                    // Scan inside table cells for runs. CONSISTENCY(word-ole-query):
+                    // mirrors the OLE/equation branches above. Without this, run
+                    // selectors like `run[color=#FF0000]` silently skip any run
+                    // inside a table cell. (issue #68)
+                    var tblIdx = body.Elements<DocumentFormat.OpenXml.Wordprocessing.Table>()
+                        .TakeWhile(t => t != tbl).Count();
+                    int rowIdx = 0;
+                    foreach (var row in tbl.Elements<TableRow>())
+                    {
+                        rowIdx++;
+                        int cellIdx = 0;
+                        foreach (var cell in row.Elements<TableCell>())
+                        {
+                            cellIdx++;
+                            int cellParaIdx = 0;
+                            foreach (var cellPara in cell.Elements<Paragraph>())
+                            {
+                                cellParaIdx++;
+                                int cellRunIdx = 0;
+                                foreach (var cellRun in GetAllRuns(cellPara))
+                                {
+                                    cellRunIdx++;
+                                    if (MatchesRunSelector(cellRun, cellPara, parsed))
+                                    {
+                                        results.Add(ElementToNode(cellRun,
+                                            $"/body/tbl[{tblIdx + 1}]/tr[{rowIdx}]/tc[{cellIdx}]/{BuildParaPathSegment(cellPara, cellParaIdx)}/r[{cellRunIdx}]", 0));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 continue;
             }
 
