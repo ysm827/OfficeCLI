@@ -302,6 +302,7 @@ public partial class WordHandler
                 $"Cannot add 'style' under {parentPath}: styles belong under /styles.");
         }
 
+
         // <w:tbl> only accepts tblPr, tblGrid, tr, sdt, customXml as children.
         // Reject anything else (paragraph, table, section, toc, break, ...) so
         // Word doesn't open a corrupted document silently.

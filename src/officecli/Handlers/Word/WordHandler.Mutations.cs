@@ -461,6 +461,41 @@ public partial class WordHandler
         var element = NavigateToElement(srcParts)
             ?? throw new ArgumentException($"Source not found: {sourcePath}");
 
+        // Bookmarks are a start/end pair spanning arbitrary content; the
+        // virtual `/bookmark[@name=X]` selector (and any bare bookmarkStart/
+        // bookmarkEnd path) points at one marker only, so a naive clone
+        // produces a never-closed bookmark. Reject with a direction to clone
+        // the containing paragraph or range instead.
+        if (element is BookmarkStart or BookmarkEnd)
+        {
+            throw new ArgumentException(
+                $"Cannot clone '{sourcePath}': bookmarks span content via a start/end pair. Clone the containing paragraph (or a range) instead.");
+        }
+
+        // Part-scoped elements: <w:footnote>, <w:endnote>, <w:comment> live
+        // in their own XML parts. Cloning the raw element into main-document
+        // body produces schema-invalid OOXML (body can only reference these
+        // via <w:footnoteReference>, <w:endnoteReference>, <w:commentReference>
+        // and commentRangeStart/End). This rejection is clone-specific — the
+        // legitimate `add --type footnote/endnote/comment --prop text=...`
+        // path uses dedicated helpers that insert a reference at the target
+        // and append the content to the correct part.
+        if (element is Footnote)
+        {
+            throw new ArgumentException(
+                $"Cannot clone '{sourcePath}': <w:footnote> belongs in /word/footnotes.xml. Use `add --type footnote --prop text=...` to create a new footnote, or clone a paragraph containing a footnoteReference.");
+        }
+        if (element is Endnote)
+        {
+            throw new ArgumentException(
+                $"Cannot clone '{sourcePath}': <w:endnote> belongs in /word/endnotes.xml. Use `add --type endnote --prop text=...` to create a new endnote, or clone a paragraph containing an endnoteReference.");
+        }
+        if (element is Comment)
+        {
+            throw new ArgumentException(
+                $"Cannot clone '{sourcePath}': <w:comment> belongs in /word/comments.xml. Use `add --type comment --prop text=...` to create a new comment, or clone a paragraph containing commentRangeStart/End.");
+        }
+
         OpenXmlElement targetParent;
         if (targetParentPath is "/" or "" or "/body")
         {
@@ -566,6 +601,42 @@ public partial class WordHandler
             }
         }
 
+        // Regenerate revision ids on cloned <w:ins>/<w:del> elements so the
+        // clone doesn't collide with the source (or any other in-doc) w:id.
+        // Semantic validators reject duplicate ins/del ids and Word treats
+        // two elements with the same id as a single tracked change.
+        if (docBody != null)
+        {
+            var existingRevIds = new HashSet<int>(
+                docBody.Descendants<InsertedRun>()
+                    .Where(e => !ReferenceEquals(e, clone) && !e.Ancestors().Contains(clone))
+                    .Select(e => int.TryParse(e.Id?.Value, out var i) ? i : -1)
+                    .Where(i => i >= 0));
+            foreach (var i in docBody.Descendants<DeletedRun>()
+                .Where(e => !ReferenceEquals(e, clone) && !e.Ancestors().Contains(clone))
+                .Select(e => int.TryParse(e.Id?.Value, out var i) ? i : -1)
+                .Where(i => i >= 0))
+            {
+                existingRevIds.Add(i);
+            }
+            var nextRevId = existingRevIds.Count > 0 ? existingRevIds.Max() + 1 : 1;
+
+            var insInClone = clone is InsertedRun irSelf
+                ? new[] { irSelf }
+                : clone.Descendants<InsertedRun>().ToArray();
+            var delInClone = clone is DeletedRun drSelf
+                ? new[] { drSelf }
+                : clone.Descendants<DeletedRun>().ToArray();
+            foreach (var ir in insInClone)
+            {
+                ir.Id = (nextRevId++).ToString();
+            }
+            foreach (var dr in delInClone)
+            {
+                dr.Id = (nextRevId++).ToString();
+            }
+        }
+
         // Handle find: anchor sentinel up front — Add() uses AddAtFindPosition
         // to split the paragraph at a text-match point, but CopyFrom has no
         // analogous split-based insertion path. The common case (e.g. cloning
@@ -639,6 +710,13 @@ public partial class WordHandler
             "sdt" => "sdt",
             "hyperlink" => "hyperlink",
             "bookmarkstart" or "bookmarkend" => "bookmark",
+            // Part-scoped elements — ValidateParentChild rejects these wholesale
+            // when the target parent is body/paragraph/cell, preventing raw
+            // <w:footnote>/<w:endnote>/<w:comment> from being cloned into
+            // main-document content.
+            "footnote" => "footnote",
+            "endnote" => "endnote",
+            "comment" => "comment",
             _ => localName.ToLowerInvariant()
         };
 
