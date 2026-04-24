@@ -1470,7 +1470,7 @@ public partial class PowerPointHandler
                         if (!GenericXmlQuery.SetGenericAttribute(slide2, key, value))
                         {
                             if (unsupported.Count == 0)
-                                unsupported.Add($"{key} (valid slide props: background, layout, transition, name, align, distribute, targets, showFooter, showSlideNumber, showDate, showHeader)");
+                                unsupported.Add($"{key} (valid slide props: background, background.mode, background.alpha, background.scale, layout, transition, name, align, distribute, targets, showFooter, showSlideNumber, showDate, showHeader)");
                             else
                                 unsupported.Add(key);
                         }
