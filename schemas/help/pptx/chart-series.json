@@ -13,7 +13,7 @@
     "stable":     ["/slide[N]/chart[@id=ID]/series[@id=ID]"],
     "positional": ["/slide[N]/chart[N]/series[N]"]
   },
-  "note": "At Add time, series are usually passed as properties of the parent `chart` element using dotted keys (series1.name, series1.values, series1.color, series1.categories). This element represents per-series Set/Get after the chart exists.",
+  "note": "At Add time, series are usually passed as properties of the parent `chart` element using dotted keys (series1.name, series1.values, series1.color, series1.categories). This element represents per-series Set/Get after the chart exists. Combo charts (mixed chartType per series, or secondary axis) are not supported. Create a separate chart for each chart type.",
   "properties": {
     "name": {
       "type": "string",

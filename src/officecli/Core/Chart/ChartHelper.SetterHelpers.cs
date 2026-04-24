@@ -315,8 +315,10 @@ internal static partial class ChartHelper
     /// <summary>
     /// Handle per-series dotted properties: smooth, trendline, trendline.*, marker, markerSize,
     /// point{M}.color, point{M}.explosion, invertIfNeg, errBars, color.
+    /// Returns true if the property was recognized and handled; false otherwise so the
+    /// caller can surface it as "unsupported" rather than silently accepting it.
     /// </summary>
-    internal static void HandleSeriesDottedProperty(OpenXmlCompositeElement ser, string prop, string value)
+    internal static bool HandleSeriesDottedProperty(OpenXmlCompositeElement ser, string prop, string value)
     {
         switch (prop)
         {
@@ -327,7 +329,7 @@ internal static partial class ChartHelper
                     ser.RemoveAllChildren<C.Smooth>();
                     InsertSeriesChildInOrder(ser, new C.Smooth { Val = ParseHelpers.IsTruthy(value) });
                 }
-                break;
+                return true;
 
             case "trendline":
                 // CL20: `Set trendline=X` APPENDS a trendline (Excel allows
@@ -355,11 +357,11 @@ internal static partial class ChartHelper
                         InsertSeriesChildInOrder(ser, newTl);
                     }
                 }
-                break;
+                return true;
 
             case "marker":
                 ApplySeriesMarker(ser, value);
-                break;
+                return true;
 
             case "markersize":
             {
@@ -367,12 +369,12 @@ internal static partial class ChartHelper
                 if (marker == null) { marker = new C.Marker(); ser.AppendChild(marker); }
                 marker.RemoveAllChildren<C.Size>();
                 marker.AppendChild(new C.Size { Val = ParseHelpers.SafeParseByte(value, "series.markerSize") });
-                break;
+                return true;
             }
 
             case "color":
                 ApplySeriesColor(ser, value);
-                break;
+                return true;
 
             case "name":
             {
@@ -392,7 +394,7 @@ internal static partial class ChartHelper
                         serText.AppendChild(new C.NumericValue(value));
                     }
                 }
-                break;
+                return true;
             }
 
             case "values":
@@ -418,34 +420,34 @@ internal static partial class ChartHelper
                             valEl.AppendChild(child.CloneNode(true));
                     }
                 }
-                break;
+                return true;
             }
 
             case "invertifneg" or "invertifnegative":
                 ser.RemoveAllChildren<C.InvertIfNegative>();
                 ser.AppendChild(new C.InvertIfNegative { Val = ParseHelpers.IsTruthy(value) });
-                break;
+                return true;
 
             case "errbars" or "errorbars":
                 ser.RemoveAllChildren<C.ErrorBars>();
                 if (!value.Equals("none", StringComparison.OrdinalIgnoreCase)
                     && SeriesSupportsErrorBars(ser))
                     InsertSeriesChildInOrder(ser, BuildErrorBars(value));
-                break;
+                return true;
 
             case "explosion" or "explode":
                 ser.RemoveAllChildren<C.Explosion>();
                 if (uint.TryParse(value, out var expVal) && expVal > 0)
                     ser.AppendChild(new C.Explosion { Val = expVal });
-                break;
+                return true;
 
             case "linewidth":
                 ApplySeriesLineWidth(ser, (int)(ParseHelpers.SafeParseDouble(value, "series.lineWidth") * 12700));
-                break;
+                return true;
 
             case "linedash" or "dash":
                 ApplySeriesLineDash(ser, value);
-                break;
+                return true;
 
             case "shadow":
             {
@@ -457,7 +459,7 @@ internal static partial class ChartHelper
                 effectList.RemoveAllChildren<Drawing.OuterShadow>();
                 if (!value.Equals("none", StringComparison.OrdinalIgnoreCase))
                     effectList.AppendChild(DrawingEffectsHelper.BuildOuterShadow(value, BuildChartColorElement));
-                break;
+                return true;
             }
 
             case "outline":
@@ -472,29 +474,32 @@ internal static partial class ChartHelper
                     if (effLst != null) spPr.InsertBefore(outlineEl, effLst);
                     else spPr.AppendChild(outlineEl);
                 }
-                break;
+                return true;
             }
 
             case "gradient" or "gradientfill":
                 ApplySeriesGradient(ser, value);
-                break;
+                return true;
 
             case "alpha" or "transparency":
             {
                 var alphaPercent = ParseHelpers.SafeParseDouble(value, "series.alpha");
                 if (prop == "transparency") alphaPercent = 100.0 - alphaPercent;
                 ApplySeriesAlpha(ser, (int)(alphaPercent * 1000));
-                break;
+                return true;
             }
 
             default:
                 // Trendline sub-properties: series{N}.trendline.name, .forward, .backward, etc.
+                // NOTE: this is an inner dispatch — if the sub-property is not one of
+                // ApplyTrendlineOptions' known cases it is silently ignored. See report:
+                // same silent-accept risk exists for trendline.* and point{M}.* sub-keys.
                 if (prop.StartsWith("trendline."))
                 {
                     var tl = ser.GetFirstChild<C.Trendline>();
                     if (tl != null)
                         ApplyTrendlineOptions(tl, prop["trendline.".Length..], value);
-                    break;
+                    return true;
                 }
                 // Per-point properties: series{N}.point{M}.color, series{N}.point{M}.explosion
                 if (prop.StartsWith("point") && TryParsePointKey(prop, out var ptIdx, out var ptProp))
@@ -503,14 +508,20 @@ internal static partial class ChartHelper
                     {
                         case "color":
                             ApplyDataPointColor(ser, ptIdx - 1, value);
-                            break;
+                            return true;
                         case "explosion" or "explode":
                             ApplyDataPointExplosion(ser, ptIdx - 1,
                                 uint.TryParse(value, out var pe) ? pe : 0u);
-                            break;
+                            return true;
+                        default:
+                            // Unknown point sub-property — surface as unsupported.
+                            return false;
                     }
                 }
-                break;
+                // Genuinely unknown series sub-property (e.g. chartType, axisGroup) —
+                // surface via `unsupported` so callers see "Set lied" errors instead
+                // of a bogus "Updated" message.
+                return false;
         }
     }
 
