@@ -658,10 +658,13 @@ public partial class PowerPointHandler
                 ? lastPart[..^3] : lastPart;
             if (colorParts.Count >= 2 &&
                 int.TryParse(angleCandidate, out var angleDeg) &&
-                angleCandidate.Length <= 4)
+                angleCandidate.Length <= 4 &&
+                angleDeg >= -360 && angleDeg <= 360)
             {
                 // OOXML a:lin/@ang range is [0, 21600000) in 60000ths of a degree.
-                // Normalize into [0, 360) so 720, -45, 400 don't break validation.
+                // Accept only [-360, 360] — anything outside is almost certainly a
+                // user typo (extra digit, mis-pasted value) and mod-wrapping it would
+                // silently bake in a fill the user did not ask for.
                 angleDeg = ((angleDeg % 360) + 360) % 360;
                 angle = angleDeg * 60000;
                 colorParts.RemoveAt(colorParts.Count - 1);
