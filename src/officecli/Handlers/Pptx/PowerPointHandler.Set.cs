@@ -1305,67 +1305,7 @@ public partial class PowerPointHandler
 
         // Try shape-level path: /slide[N]/shape[M]
         var match = Regex.Match(path, @"^/slide\[(\d+)\]/shape\[(\d+)\]$");
-        if (match.Success)
-        {
-            var slideIdx = int.Parse(match.Groups[1].Value);
-            var shapeIdx = int.Parse(match.Groups[2].Value);
-
-            var (slidePart, shape) = ResolveShape(slideIdx, shapeIdx);
-
-            // Handle z-order first (changes shape position in tree)
-            var zOrderValue = properties.GetValueOrDefault("zorder")
-                ?? properties.GetValueOrDefault("z-order")
-                ?? properties.GetValueOrDefault("order");
-            if (zOrderValue != null)
-            {
-                ApplyZOrder(slidePart, shape, zOrderValue);
-            }
-
-            // Clone shape for rollback on failure (atomic: no partial modifications)
-            var shapeBackup = shape.CloneNode(true);
-
-            try
-            {
-                var allRuns = shape.Descendants<Drawing.Run>().ToList();
-
-                // Separate animation, motionPath, link, and z-order from other shape properties
-                var animValue = properties.GetValueOrDefault("animation")
-                    ?? properties.GetValueOrDefault("animate");
-                var motionPathValue = properties.GetValueOrDefault("motionpath")
-                    ?? properties.GetValueOrDefault("motionPath");
-                var linkValue = properties.GetValueOrDefault("link");
-                var tooltipValue = properties.GetValueOrDefault("tooltip");
-                var excludeKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                    { "animation", "animate", "motionpath", "motionPath", "link", "tooltip", "zorder", "z-order", "order" };
-                var shapeProps = properties
-                    .Where(kv => !excludeKeys.Contains(kv.Key))
-                    .ToDictionary(kv => kv.Key, kv => kv.Value);
-
-                var unsupported = SetRunOrShapeProperties(shapeProps, allRuns, shape, slidePart);
-
-                if (animValue != null)
-                {
-                    // Remove existing animations before applying new one (replace, not accumulate)
-                    var shapeId = shape.NonVisualShapeProperties?.NonVisualDrawingProperties?.Id?.Value;
-                    if (shapeId.HasValue)
-                        RemoveShapeAnimations(slidePart.Slide!, shapeId.Value);
-                    ApplyShapeAnimation(slidePart, shape, animValue);
-                }
-                if (motionPathValue != null)
-                    ApplyMotionPathAnimation(slidePart, shape, motionPathValue);
-                if (linkValue != null)
-                    ApplyShapeHyperlink(slidePart, shape, linkValue, tooltipValue);
-
-                GetSlide(slidePart).Save();
-                return unsupported;
-            }
-            catch
-            {
-                // Rollback: restore shape to pre-modification state
-                shape.Parent?.ReplaceChild(shapeBackup, shape);
-                throw;
-            }
-        }
+        if (match.Success) return SetShapeByPath(match, properties);
 
         // Try connector path: /slide[N]/connector[M] or /slide[N]/connection[M]
         var cxnMatch = Regex.Match(path, @"^/slide\[(\d+)\]/(?:connector|connection)\[(\d+)\]$");
@@ -2151,5 +2091,67 @@ public partial class PowerPointHandler
         var unsupported = SetRunOrShapeProperties(properties, allRuns, shape, slidePart);
         GetSlide(slidePart).Save();
         return unsupported;
+    }
+
+    private List<string> SetShapeByPath(Match match, Dictionary<string, string> properties)
+    {
+        var slideIdx = int.Parse(match.Groups[1].Value);
+        var shapeIdx = int.Parse(match.Groups[2].Value);
+
+        var (slidePart, shape) = ResolveShape(slideIdx, shapeIdx);
+
+        // Handle z-order first (changes shape position in tree)
+        var zOrderValue = properties.GetValueOrDefault("zorder")
+            ?? properties.GetValueOrDefault("z-order")
+            ?? properties.GetValueOrDefault("order");
+        if (zOrderValue != null)
+        {
+            ApplyZOrder(slidePart, shape, zOrderValue);
+        }
+
+        // Clone shape for rollback on failure (atomic: no partial modifications)
+        var shapeBackup = shape.CloneNode(true);
+
+        try
+        {
+            var allRuns = shape.Descendants<Drawing.Run>().ToList();
+
+            // Separate animation, motionPath, link, and z-order from other shape properties
+            var animValue = properties.GetValueOrDefault("animation")
+                ?? properties.GetValueOrDefault("animate");
+            var motionPathValue = properties.GetValueOrDefault("motionpath")
+                ?? properties.GetValueOrDefault("motionPath");
+            var linkValue = properties.GetValueOrDefault("link");
+            var tooltipValue = properties.GetValueOrDefault("tooltip");
+            var excludeKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                { "animation", "animate", "motionpath", "motionPath", "link", "tooltip", "zorder", "z-order", "order" };
+            var shapeProps = properties
+                .Where(kv => !excludeKeys.Contains(kv.Key))
+                .ToDictionary(kv => kv.Key, kv => kv.Value);
+
+            var unsupported = SetRunOrShapeProperties(shapeProps, allRuns, shape, slidePart);
+
+            if (animValue != null)
+            {
+                // Remove existing animations before applying new one (replace, not accumulate)
+                var shapeId = shape.NonVisualShapeProperties?.NonVisualDrawingProperties?.Id?.Value;
+                if (shapeId.HasValue)
+                    RemoveShapeAnimations(slidePart.Slide!, shapeId.Value);
+                ApplyShapeAnimation(slidePart, shape, animValue);
+            }
+            if (motionPathValue != null)
+                ApplyMotionPathAnimation(slidePart, shape, motionPathValue);
+            if (linkValue != null)
+                ApplyShapeHyperlink(slidePart, shape, linkValue, tooltipValue);
+
+            GetSlide(slidePart).Save();
+            return unsupported;
+        }
+        catch
+        {
+            // Rollback: restore shape to pre-modification state
+            shape.Parent?.ReplaceChild(shapeBackup, shape);
+            throw;
+        }
     }
 }
