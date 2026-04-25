@@ -53,6 +53,13 @@ public static class McpServer
                 {
                     using var doc = JsonDocument.Parse(line);
                     var root = doc.RootElement;
+                    // Batch requests (JSON array) are not supported; return -32600.
+                    // Guard here before TryGetProperty which throws on non-Object.
+                    if (root.ValueKind != JsonValueKind.Object)
+                    {
+                        await writer.WriteLineAsync(ErrorJson(null, -32600, "Invalid Request: batch requests are not supported"));
+                        continue;
+                    }
                     // Parse id BEFORE method so a malformed method ('method': 42)
                     // can still echo the original id back per JSON-RPC 2.0 §5.
                     id = root.TryGetProperty("id", out var idEl) ? idEl.Clone() : null;
