@@ -732,127 +732,7 @@ public partial class PowerPointHandler
 
         // Try slide-level path: /slide[N]
         var slideOnlyMatch = Regex.Match(path, @"^/slide\[(\d+)\]$");
-        if (slideOnlyMatch.Success)
-        {
-            var slideIdx = int.Parse(slideOnlyMatch.Groups[1].Value);
-            var slideParts2 = GetSlideParts().ToList();
-            if (slideIdx < 1 || slideIdx > slideParts2.Count)
-                throw new ArgumentException($"Slide {slideIdx} not found (total: {slideParts2.Count})");
-            var slidePart2 = slideParts2[slideIdx - 1];
-            var slide2 = GetSlide(slidePart2);
-
-            var unsupported = new List<string>();
-            foreach (var (key, value) in properties)
-            {
-                switch (key.ToLowerInvariant())
-                {
-                    case "background":
-                        ApplyBackground(slidePart2, value, ReadBackgroundImageOptions(properties));
-                        break;
-                    case "background.mode":
-                    case "background.alpha":
-                    case "background.scale":
-                        // If paired with "background=", consumed inside the "background" case
-                        // via ReadBackgroundImageOptions. Otherwise mutate the existing image
-                        // fill in place — done once for the whole property batch, gated below.
-                        break;
-                    case "transition":
-                        ApplyTransition(slidePart2, value);
-                        if (value.StartsWith("morph", StringComparison.OrdinalIgnoreCase))
-                            AutoPrefixMorphNames(slidePart2);
-                        else
-                            AutoUnprefixMorphNames(slidePart2);
-                        break;
-                    case "advancetime" or "advanceaftertime":
-                        SetAdvanceTime(slide2, value);
-                        break;
-                    case "advanceclick" or "advanceonclick":
-                        SetAdvanceClick(slide2, IsTruthy(value));
-                        break;
-                    case "notes":
-                    {
-                        var notesPart = EnsureNotesSlidePart(slidePart2);
-                        SetNotesText(notesPart, value);
-                        break;
-                    }
-                    case "align":
-                    {
-                        var targets = properties.GetValueOrDefault("targets");
-                        AlignShapes(slidePart2, value, targets);
-                        break;
-                    }
-                    case "distribute":
-                    {
-                        var targets = properties.GetValueOrDefault("targets");
-                        DistributeShapes(slidePart2, value, targets);
-                        break;
-                    }
-                    case "targets":
-                        break; // consumed by align/distribute
-                    case "showfooter":
-                    case "showslidenumber":
-                    case "showdate":
-                    case "showheader":
-                    {
-                        // Toggle header/footer visibility flags on the slide.
-                        // Emits <p:hf ftr="1" sldNum="0" dt="1" hdr="0"/> as a
-                        // direct child of <p:sld>. The OpenXml SDK models this
-                        // via DocumentFormat.OpenXml.Presentation.HeaderFooter
-                        // (local name "hf"). Although CT_Slide's published
-                        // schema does not list hf, PowerPoint itself writes it
-                        // on slides when the "Insert > Header & Footer" dialog
-                        // toggles per-slide overrides — we mirror that.
-                        var hf = slide2.GetFirstChild<HeaderFooter>() ?? new HeaderFooter();
-                        bool isNew = hf.Parent == null;
-                        bool flag = IsTruthy(value);
-                        switch (key.ToLowerInvariant())
-                        {
-                            case "showfooter": hf.Footer = flag; break;
-                            case "showslidenumber": hf.SlideNumber = flag; break;
-                            case "showdate": hf.DateTime = flag; break;
-                            case "showheader": hf.Header = flag; break;
-                        }
-                        if (isNew) slide2.AppendChild(hf);
-                        break;
-                    }
-                    case "layout":
-                    {
-                        // Change slide layout
-                        var presentationPart = _doc.PresentationPart
-                            ?? throw new InvalidOperationException("No presentation part");
-                        var allLayouts = presentationPart.SlideMasterParts
-                            .SelectMany(m => m.SlideLayoutParts).ToList();
-                        var targetLayout = allLayouts.FirstOrDefault(lp =>
-                            lp.SlideLayout?.CommonSlideData?.Name?.Value?.Equals(value, StringComparison.OrdinalIgnoreCase) == true);
-                        if (targetLayout == null)
-                        {
-                            var availableNames = allLayouts
-                                .Select(lp => lp.SlideLayout?.CommonSlideData?.Name?.Value)
-                                .Where(n => n != null)
-                                .ToList();
-                            throw new ArgumentException($"Layout '{value}' not found. Available layouts: {string.Join(", ", availableNames)}");
-                        }
-                        // Point the slide's layout relationship to the new layout
-                        if (slidePart2.SlideLayoutPart != null)
-                            slidePart2.DeletePart(slidePart2.SlideLayoutPart);
-                        slidePart2.AddPart(targetLayout);
-                        break;
-                    }
-                    default:
-                        if (!GenericXmlQuery.SetGenericAttribute(slide2, key, value))
-                        {
-                            if (unsupported.Count == 0)
-                                unsupported.Add($"{key} (valid slide props: background, background.mode, background.alpha, background.scale, layout, transition, name, align, distribute, targets, showFooter, showSlideNumber, showDate, showHeader)");
-                            else
-                                unsupported.Add(key);
-                        }
-                        break;
-                }
-            }
-            MaybeMutateExistingBackgroundImage(slidePart2, properties);
-            slide2.Save();
-            return unsupported;
-        }
+        if (slideOnlyMatch.Success) return SetSlideByPath(slideOnlyMatch, properties);
 
         // Try model3d-level path: /slide[N]/model3d[M]
         var model3dSetMatch = Regex.Match(path, @"^/slide\[(\d+)\]/model3d\[(\d+)\]$");
@@ -1908,6 +1788,128 @@ public partial class PowerPointHandler
         var allRuns = shape.Descendants<Drawing.Run>().ToList();
         var unsupported = SetRunOrShapeProperties(properties, allRuns, shape, slidePart);
         GetSlide(slidePart).Save();
+        return unsupported;
+    }
+
+    private List<string> SetSlideByPath(Match slideOnlyMatch, Dictionary<string, string> properties)
+    {
+        var slideIdx = int.Parse(slideOnlyMatch.Groups[1].Value);
+        var slideParts2 = GetSlideParts().ToList();
+        if (slideIdx < 1 || slideIdx > slideParts2.Count)
+            throw new ArgumentException($"Slide {slideIdx} not found (total: {slideParts2.Count})");
+        var slidePart2 = slideParts2[slideIdx - 1];
+        var slide2 = GetSlide(slidePart2);
+
+        var unsupported = new List<string>();
+        foreach (var (key, value) in properties)
+        {
+            switch (key.ToLowerInvariant())
+            {
+                case "background":
+                    ApplyBackground(slidePart2, value, ReadBackgroundImageOptions(properties));
+                    break;
+                case "background.mode":
+                case "background.alpha":
+                case "background.scale":
+                    // If paired with "background=", consumed inside the "background" case
+                    // via ReadBackgroundImageOptions. Otherwise mutate the existing image
+                    // fill in place — done once for the whole property batch, gated below.
+                    break;
+                case "transition":
+                    ApplyTransition(slidePart2, value);
+                    if (value.StartsWith("morph", StringComparison.OrdinalIgnoreCase))
+                        AutoPrefixMorphNames(slidePart2);
+                    else
+                        AutoUnprefixMorphNames(slidePart2);
+                    break;
+                case "advancetime" or "advanceaftertime":
+                    SetAdvanceTime(slide2, value);
+                    break;
+                case "advanceclick" or "advanceonclick":
+                    SetAdvanceClick(slide2, IsTruthy(value));
+                    break;
+                case "notes":
+                {
+                    var notesPart = EnsureNotesSlidePart(slidePart2);
+                    SetNotesText(notesPart, value);
+                    break;
+                }
+                case "align":
+                {
+                    var targets = properties.GetValueOrDefault("targets");
+                    AlignShapes(slidePart2, value, targets);
+                    break;
+                }
+                case "distribute":
+                {
+                    var targets = properties.GetValueOrDefault("targets");
+                    DistributeShapes(slidePart2, value, targets);
+                    break;
+                }
+                case "targets":
+                    break; // consumed by align/distribute
+                case "showfooter":
+                case "showslidenumber":
+                case "showdate":
+                case "showheader":
+                {
+                    // Toggle header/footer visibility flags on the slide.
+                    // Emits <p:hf ftr="1" sldNum="0" dt="1" hdr="0"/> as a
+                    // direct child of <p:sld>. The OpenXml SDK models this
+                    // via DocumentFormat.OpenXml.Presentation.HeaderFooter
+                    // (local name "hf"). Although CT_Slide's published
+                    // schema does not list hf, PowerPoint itself writes it
+                    // on slides when the "Insert > Header & Footer" dialog
+                    // toggles per-slide overrides — we mirror that.
+                    var hf = slide2.GetFirstChild<HeaderFooter>() ?? new HeaderFooter();
+                    bool isNew = hf.Parent == null;
+                    bool flag = IsTruthy(value);
+                    switch (key.ToLowerInvariant())
+                    {
+                        case "showfooter": hf.Footer = flag; break;
+                        case "showslidenumber": hf.SlideNumber = flag; break;
+                        case "showdate": hf.DateTime = flag; break;
+                        case "showheader": hf.Header = flag; break;
+                    }
+                    if (isNew) slide2.AppendChild(hf);
+                    break;
+                }
+                case "layout":
+                {
+                    // Change slide layout
+                    var presentationPart = _doc.PresentationPart
+                        ?? throw new InvalidOperationException("No presentation part");
+                    var allLayouts = presentationPart.SlideMasterParts
+                        .SelectMany(m => m.SlideLayoutParts).ToList();
+                    var targetLayout = allLayouts.FirstOrDefault(lp =>
+                        lp.SlideLayout?.CommonSlideData?.Name?.Value?.Equals(value, StringComparison.OrdinalIgnoreCase) == true);
+                    if (targetLayout == null)
+                    {
+                        var availableNames = allLayouts
+                            .Select(lp => lp.SlideLayout?.CommonSlideData?.Name?.Value)
+                            .Where(n => n != null)
+                            .ToList();
+                        throw new ArgumentException($"Layout '{value}' not found. Available layouts: {string.Join(", ", availableNames)}");
+                    }
+                    // Point the slide's layout relationship to the new layout
+                    if (slidePart2.SlideLayoutPart != null)
+                        slidePart2.DeletePart(slidePart2.SlideLayoutPart);
+                    slidePart2.AddPart(targetLayout);
+                    break;
+                }
+                default:
+                    if (!GenericXmlQuery.SetGenericAttribute(slide2, key, value))
+                    {
+                        if (unsupported.Count == 0)
+                            unsupported.Add($"{key} (valid slide props: background, background.mode, background.alpha, background.scale, layout, transition, name, align, distribute, targets, showFooter, showSlideNumber, showDate, showHeader)");
+                        else
+                            unsupported.Add(key);
+                    }
+                    break;
+            }
+        }
+        MaybeMutateExistingBackgroundImage(slidePart2, properties);
+        slide2.Save();
         return unsupported;
     }
 
