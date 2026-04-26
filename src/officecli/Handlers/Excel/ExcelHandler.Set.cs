@@ -311,6 +311,23 @@ public partial class ExcelHandler
             switch (key.ToLowerInvariant())
             {
                 case "value" or "text":
+                    // bt-3: if the cell already carries a text number format
+                    // ("@", numFmtId 49) from a prior `set numberformat=@`,
+                    // honor it on subsequent value updates by forcing the cell
+                    // to String storage. Skip when the user is overriding the
+                    // numberformat in this same call (styleProps captures that
+                    // path via IsTextNumberFormat already).
+                    bool existingIsTextFmt = false;
+                    if (!properties.ContainsKey("numberformat")
+                        && !properties.ContainsKey("numfmt")
+                        && !properties.ContainsKey("format")
+                        && !properties.ContainsKey("type"))
+                    {
+                        var (existingNumFmtId, existingFmtCode) = ExcelDataFormatter.GetCellFormat(cell, _doc.WorkbookPart);
+                        if (existingNumFmtId == 49
+                            || (existingFmtCode != null && existingFmtCode.Trim() == "@"))
+                            existingIsTextFmt = true;
+                    }
                     // R28-B4 — leading apostrophe is Excel's "force text" idiom.
                     // Strip the apostrophe from the stored value and stamp
                     // quotePrefix=1 on the cell xf so Excel renders the value
@@ -352,7 +369,7 @@ public partial class ExcelHandler
                     {
                         // Check if user explicitly set type
                         var hasExplicitType = properties.Any(p => p.Key.Equals("type", StringComparison.OrdinalIgnoreCase));
-                        var explicitTypeIsString = quotePrefixForce || (hasExplicitType && properties
+                        var explicitTypeIsString = quotePrefixForce || existingIsTextFmt || (hasExplicitType && properties
                             .Where(p => p.Key.Equals("type", StringComparison.OrdinalIgnoreCase))
                             .Select(p => p.Value?.ToLowerInvariant())
                             .Any(v => v is "string" or "str"));
