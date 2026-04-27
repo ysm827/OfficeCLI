@@ -580,8 +580,19 @@ public partial class WordHandler
             fNewPara.AppendChild(fieldRunResult);
             fNewPara.AppendChild(fieldRunEnd);
             InsertAtIndexOrAppend(parent, fNewPara, index);
-            var fIdx2 = body.Elements<Paragraph>().TakeWhile(p => p != fNewPara).Count();
-            resultPath = $"/body/{BuildParaPathSegment(fNewPara, fIdx2 + 1)}";
+            // CONSISTENCY(add-get-symmetry): when the field paragraph lands in
+            // a header/footer/cell, return a path rooted at the actual parent
+            // so Get can resolve it. Mirrors AddBreak (line ~640).
+            if (parent is Body)
+            {
+                var fIdx2 = body.Elements<Paragraph>().TakeWhile(p => p != fNewPara).Count();
+                resultPath = $"/body/{BuildParaPathSegment(fNewPara, fIdx2 + 1)}";
+            }
+            else
+            {
+                var fIdx2 = parent.Elements<Paragraph>().TakeWhile(p => p != fNewPara).Count();
+                resultPath = $"{parentPath}/p[{fIdx2 + 1}]";
+            }
         }
         return resultPath;
     }
