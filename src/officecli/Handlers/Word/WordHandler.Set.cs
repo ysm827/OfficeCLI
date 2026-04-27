@@ -262,6 +262,7 @@ public partial class WordHandler
 
     private List<string> SetElement(OpenXmlElement element, Dictionary<string, string> properties)
     {
+        if (element is Comment cmt) return SetElementComment(cmt, properties);
         if (element is BookmarkStart bk) return SetElementBookmark(bk, properties);
         if (element is SdtBlock || element is SdtRun) return SetElementSdt(element, properties);
         if (element is Run run) return SetElementRun(run, properties);

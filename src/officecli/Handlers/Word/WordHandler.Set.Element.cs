@@ -59,6 +59,40 @@ public partial class WordHandler
         return unsupported;
     }
 
+    private List<string> SetElementComment(Comment comment, Dictionary<string, string> properties)
+    {
+        var unsupported = new List<string>();
+        foreach (var (key, value) in properties)
+        {
+            switch (key.ToLowerInvariant())
+            {
+                case "text":
+                {
+                    // Replace comment body with a single paragraph/run carrying
+                    // the new text. Mirrors AddComment's element shape.
+                    comment.RemoveAllChildren();
+                    comment.AppendChild(new Paragraph(
+                        new Run(new Text(value) { Space = SpaceProcessingModeValues.Preserve })));
+                    break;
+                }
+                case "author":
+                    comment.Author = value;
+                    break;
+                case "initials":
+                    comment.Initials = value;
+                    break;
+                case "date":
+                    comment.Date = DateTime.Parse(value);
+                    break;
+                default:
+                    unsupported.Add(key);
+                    break;
+            }
+        }
+        _doc.MainDocumentPart?.WordprocessingCommentsPart?.Comments?.Save();
+        return unsupported;
+    }
+
     private List<string> SetElementSdt(OpenXmlElement element, Dictionary<string, string> properties)
     {
         var unsupported = new List<string>();
