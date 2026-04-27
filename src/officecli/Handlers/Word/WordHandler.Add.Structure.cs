@@ -1216,7 +1216,18 @@ public partial class WordHandler
             hPara.AppendChild(hEndRun);
         }
 
-        headerPart.Header = new Header(hPara);
+        // AssignParaId stamps w14:paraId / w14:textId on each w:p. Those
+        // attributes are MS-2010 extensions and OpenXmlValidator rejects
+        // them with Sch_UndeclaredAttribute unless the part declares the
+        // w14 namespace and lists it in mc:Ignorable. The body part
+        // (document.xml) does this at the document root; header/footer
+        // parts need the same so paragraphs validated independently
+        // accept the extension attrs.
+        var hRoot = new Header(hPara);
+        hRoot.AddNamespaceDeclaration("mc", "http://schemas.openxmlformats.org/markup-compatibility/2006");
+        hRoot.AddNamespaceDeclaration("w14", "http://schemas.microsoft.com/office/word/2010/wordml");
+        hRoot.SetAttribute(new OpenXmlAttribute("Ignorable", "http://schemas.openxmlformats.org/markup-compatibility/2006", "w14"));
+        headerPart.Header = hRoot;
         headerPart.Header.Save();
 
         var hBody = mainPartH.Document!.Body!;
@@ -1340,7 +1351,14 @@ public partial class WordHandler
             fPara.AppendChild(endRun);
         }
 
-        footerPart.Footer = new Footer(fPara);
+        // Same w14 / mc:Ignorable declaration as AddHeader: paragraphs
+        // here also carry w14:paraId / w14:textId from AssignParaId, and
+        // OpenXmlValidator rejects them as undeclared without this.
+        var fRoot = new Footer(fPara);
+        fRoot.AddNamespaceDeclaration("mc", "http://schemas.openxmlformats.org/markup-compatibility/2006");
+        fRoot.AddNamespaceDeclaration("w14", "http://schemas.microsoft.com/office/word/2010/wordml");
+        fRoot.SetAttribute(new OpenXmlAttribute("Ignorable", "http://schemas.openxmlformats.org/markup-compatibility/2006", "w14"));
+        footerPart.Footer = fRoot;
         footerPart.Footer.Save();
 
         var fBody = mainPartF.Document!.Body!;
