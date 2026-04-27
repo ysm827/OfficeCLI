@@ -176,9 +176,23 @@ public partial class PowerPointHandler
         var id = hlClick.Id?.Value;
         var action = hlClick.Action?.Value;
 
-        // Named actions (no relationship) → return action string directly for visibility
+        // Named actions (no relationship) → reverse-map ppaction:// strings back to
+        // the friendly names accepted by ResolveHyperlinkTarget so 'set link=firstslide'
+        // round-trips through 'get'.
         if (string.IsNullOrEmpty(id) && !string.IsNullOrEmpty(action))
+        {
+            const string showJumpPrefix = "ppaction://hlinkshowjump?jump=";
+            if (action.StartsWith(showJumpPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                var jump = action[showJumpPrefix.Length..].ToLowerInvariant();
+                return jump switch
+                {
+                    "firstslide" or "lastslide" or "nextslide" or "previousslide" => jump,
+                    _ => action
+                };
+            }
             return action;
+        }
 
         if (id == null) return null;
         try
