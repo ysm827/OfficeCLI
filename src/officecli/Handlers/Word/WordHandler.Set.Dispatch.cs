@@ -318,6 +318,20 @@ public partial class WordHandler
                 throw new ArgumentException($"Footnote {fnId} not found");
         }
 
+        // Reject text mutation on separator / continuation-separator footnotes.
+        // These are structural placeholders (Type=separator/continuationSeparator,
+        // Id=-1/0) that Word renders as a horizontal rule rather than authored
+        // text — silently mutating their inner Run text used to be reported as
+        // success without any visible effect.
+        if (properties.ContainsKey("text") && fn.Type?.Value is FootnoteEndnoteValues fnt
+            && (fnt == FootnoteEndnoteValues.Separator
+                || fnt == FootnoteEndnoteValues.ContinuationSeparator
+                || fnt == FootnoteEndnoteValues.ContinuationNotice))
+        {
+            throw new ArgumentException(
+                $"Cannot set text on footnote separator (id={fn.Id?.Value}, type={fn.Type?.InnerText ?? "?"}). " +
+                "Separator footnotes are structural; only user footnotes (id>=1) accept text.");
+        }
         if (properties.TryGetValue("text", out var fnText))
         {
             // Find the content paragraph (skip the reference mark run)
@@ -366,6 +380,15 @@ public partial class WordHandler
                 throw new ArgumentException($"Endnote {enId} not found");
         }
 
+        if (properties.ContainsKey("text") && en.Type?.Value is FootnoteEndnoteValues ent
+            && (ent == FootnoteEndnoteValues.Separator
+                || ent == FootnoteEndnoteValues.ContinuationSeparator
+                || ent == FootnoteEndnoteValues.ContinuationNotice))
+        {
+            throw new ArgumentException(
+                $"Cannot set text on endnote separator (id={en.Id?.Value}, type={en.Type?.InnerText ?? "?"}). " +
+                "Separator endnotes are structural; only user endnotes (id>=1) accept text.");
+        }
         if (properties.TryGetValue("text", out var enText))
         {
             var contentRuns = en.Descendants<Run>()

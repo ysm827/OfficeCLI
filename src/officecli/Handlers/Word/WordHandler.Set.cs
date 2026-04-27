@@ -213,12 +213,15 @@ public partial class WordHandler
             @"^/(?:toc|tableofcontents)(?:\[(\d+)\])?$");
         if (tocMatch.Success) return SetTocPath(tocMatch, properties);
 
-        // Footnote paths: /footnote[N] or .../footnote[N]
-        var fnSetMatch = System.Text.RegularExpressions.Regex.Match(path, @"/footnote\[(\d+)\]$");
+        // Footnote paths: /footnote[N], /footnote[@footnoteId=N] (incl. -1/0
+        // structural ids — separator/continuation/continuationNotice).
+        var fnSetMatch = System.Text.RegularExpressions.Regex.Match(
+            path, @"/footnote\[(?:@footnoteId=)?(-?\d+)\]$");
         if (fnSetMatch.Success) return SetFootnotePath(fnSetMatch, properties);
 
-        // Endnote paths: /endnote[N] or .../endnote[N]
-        var enSetMatch = System.Text.RegularExpressions.Regex.Match(path, @"/endnote\[(\d+)\]$");
+        // Endnote paths: same shape as footnote.
+        var enSetMatch = System.Text.RegularExpressions.Regex.Match(
+            path, @"/endnote\[(?:@endnoteId=)?(-?\d+)\]$");
         if (enSetMatch.Success) return SetEndnotePath(enSetMatch, properties);
 
         // Section paths: /section[N] or /body/sectPr[N] (canonical form returned by Get/Query)
