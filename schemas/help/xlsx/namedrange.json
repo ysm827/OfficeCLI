@@ -48,6 +48,14 @@
       "examples": ["--prop comment=\"Q4 totals\""],
       "readback": "comment text",
       "enforcement": "report"
+    },
+    "volatile": {
+      "type": "boolean",
+      "description": "force recalculation of the defined name on every workbook change (Excel volatile flag).",
+      "add": true, "set": true, "get": true,
+      "examples": ["--prop volatile=true"],
+      "readback": "volatile flag",
+      "enforcement": "report"
     }
   }
 }

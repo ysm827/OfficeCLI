@@ -46,6 +46,13 @@ public partial class ExcelHandler
                 case "ref": dn.Text = value; break;
                 case "name": dn.Name = value; break;
                 case "comment": dn.Comment = value; break;
+                case "volatile":
+                    // CONSISTENCY(definedname-volatile): map to the
+                    // Function attribute (OOXML's only volatile signal
+                    // for defined names) — see ExcelHandler.Add.Tables.cs.
+                    if (IsTruthy(value)) dn.Function = true;
+                    else dn.Function = null;
+                    break;
                 case "scope":
                     if (string.IsNullOrEmpty(value) || value.Equals("workbook", StringComparison.OrdinalIgnoreCase))
                     {

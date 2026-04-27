@@ -115,6 +115,11 @@ public partial class ExcelHandler
         }
         if (properties.TryGetValue("comment", out var nrComment))
             dn.Comment = nrComment;
+        // 'volatile' surfaces as DefinedName.Function in OOXML — Excel's
+        // recalc engine treats function-flagged defined names as volatile,
+        // forcing recalc on every workbook change.
+        if (properties.TryGetValue("volatile", out var nrVolatile) && IsTruthy(nrVolatile))
+            dn.Function = true;
 
         // CONSISTENCY(definedname-unique): Excel rejects two
         // <definedName> entries that share both name AND scope

@@ -127,6 +127,8 @@ public partial class ExcelHandler
             }
             if (!string.IsNullOrEmpty(dn.Comment?.Value))
                 nrNode.Format["comment"] = dn.Comment.Value;
+            if (dn.Function?.Value == true)
+                nrNode.Format["volatile"] = true;
 
             return nrNode;
         }
@@ -1444,6 +1446,7 @@ public partial class ExcelHandler
                         nrNode.Format["scope"] = "workbook";
                     }
                     if (dn.Comment?.HasValue == true) nrNode.Format["comment"] = dn.Comment!.Value!;
+                    if (dn.Function?.Value == true) nrNode.Format["volatile"] = true;
 
                     if (parsed.ValueContains != null)
                     {
