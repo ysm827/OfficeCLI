@@ -681,6 +681,40 @@ public partial class WordHandler
                     }
                     break;
                 }
+                case "pagenumfmt" or "pagenumberformat" or "pagenumberfmt":
+                {
+                    var lower = value.ToLowerInvariant();
+                    var fmt = lower switch
+                    {
+                        "decimal" => NumberFormatValues.Decimal,
+                        "lowerroman" => NumberFormatValues.LowerRoman,
+                        "upperroman" => NumberFormatValues.UpperRoman,
+                        "lowerletter" => NumberFormatValues.LowerLetter,
+                        "upperletter" => NumberFormatValues.UpperLetter,
+                        _ => throw new ArgumentException($"Invalid pageNumFmt: '{value}'. Valid: decimal, lowerRoman, upperRoman, lowerLetter, upperLetter.")
+                    };
+                    var pgNum = sectPr.GetFirstChild<PageNumberType>();
+                    if (pgNum == null)
+                    {
+                        pgNum = new PageNumberType();
+                        sectPr.AppendChild(pgNum);
+                    }
+                    pgNum.Format = fmt;
+                    break;
+                }
+                case "titlepage" or "titlepg":
+                {
+                    if (IsTruthy(value))
+                    {
+                        if (sectPr.GetFirstChild<TitlePage>() == null)
+                            sectPr.AppendChild(new TitlePage());
+                    }
+                    else
+                    {
+                        sectPr.RemoveAllChildren<TitlePage>();
+                    }
+                    break;
+                }
                 case "linenumbers" or "linenumbering":
                 {
                     var lower = value.ToLowerInvariant();

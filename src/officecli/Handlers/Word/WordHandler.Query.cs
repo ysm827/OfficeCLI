@@ -769,10 +769,69 @@ public partial class WordHandler
         if (margin?.Left?.Value != null) secNode.Format["marginLeft"] = FormatTwipsToCm(margin.Left.Value);
         if (margin?.Right?.Value != null) secNode.Format["marginRight"] = FormatTwipsToCm(margin.Right.Value);
 
-        // Page numbering start (w:pgNumType/@start)
+        // Page numbering start (w:pgNumType/@start) and format (w:pgNumType/@fmt)
         var pgNumType = sectPr.GetFirstChild<PageNumberType>();
         if (pgNumType?.Start?.Value != null)
             secNode.Format["pageStart"] = pgNumType.Start.Value;
+        if (pgNumType?.Format?.Value != null)
+            secNode.Format["pageNumFmt"] = pgNumType.Format.InnerText;
+
+        // Title page flag (w:titlePg) — first-page header/footer differs from rest
+        if (sectPr.GetFirstChild<TitlePage>() != null)
+            secNode.Format["titlePage"] = true;
+
+        // Header / footer references — expose so users can debug inheritance
+        var mainPart = _doc.MainDocumentPart;
+        if (mainPart != null)
+        {
+            // headerRef = primary (default or first encountered) /header[N] path;
+            // headerRef.<type> = per-type entry (default/first/even) for inheritance debugging.
+            string? primaryHeader = null;
+            foreach (var href in sectPr.Elements<HeaderReference>())
+            {
+                if (href.Id?.Value == null) continue;
+                var refType = href.Type?.InnerText ?? "default";
+                try
+                {
+                    var part = mainPart.GetPartById(href.Id.Value) as DocumentFormat.OpenXml.Packaging.HeaderPart;
+                    if (part != null)
+                    {
+                        var idx = mainPart.HeaderParts.ToList().IndexOf(part);
+                        if (idx >= 0)
+                        {
+                            var pathRef = $"/header[{idx + 1}]";
+                            secNode.Format[$"headerRef.{refType}"] = pathRef;
+                            if (primaryHeader == null || refType == "default") primaryHeader = pathRef;
+                        }
+                    }
+                }
+                catch { /* dangling rel — skip */ }
+            }
+            if (primaryHeader != null) secNode.Format["headerRef"] = primaryHeader;
+
+            string? primaryFooter = null;
+            foreach (var fref in sectPr.Elements<FooterReference>())
+            {
+                if (fref.Id?.Value == null) continue;
+                var refType = fref.Type?.InnerText ?? "default";
+                try
+                {
+                    var part = mainPart.GetPartById(fref.Id.Value) as DocumentFormat.OpenXml.Packaging.FooterPart;
+                    if (part != null)
+                    {
+                        var idx = mainPart.FooterParts.ToList().IndexOf(part);
+                        if (idx >= 0)
+                        {
+                            var pathRef = $"/footer[{idx + 1}]";
+                            secNode.Format[$"footerRef.{refType}"] = pathRef;
+                            if (primaryFooter == null || refType == "default") primaryFooter = pathRef;
+                        }
+                    }
+                }
+                catch { /* dangling rel — skip */ }
+            }
+            if (primaryFooter != null) secNode.Format["footerRef"] = primaryFooter;
+        }
 
         // Line numbers
         var lnNum = sectPr.GetFirstChild<LineNumberType>();
