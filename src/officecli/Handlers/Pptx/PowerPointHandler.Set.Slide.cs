@@ -160,9 +160,59 @@ public partial class PowerPointHandler
                     if (csd != null) csd.Name = value;
                     break;
                 }
+                case "direction" or "dir" or "rtl":
+                {
+                    // Layout/master-level RTL. Two prongs:
+                    //   1. Cascade <a:pPr rtl="1"/> onto every paragraph in every
+                    //      placeholder shape on the layout (preserves direction on
+                    //      placeholders that already have text).
+                    //   2. Persist a default in the master's <p:txStyles>
+                    //      bodyStyle/titleStyle/otherStyle Level1 paragraph
+                    //      properties. Blank layouts have no placeholders, so
+                    //      this is the only ancestor surface inheriting shapes
+                    //      can probe — see ResolveInheritedDirection.
+                    bool rtl = key.ToLowerInvariant() == "rtl"
+                        ? IsTruthy(value)
+                        : ParsePptDirectionRtl(value);
+                    var csdShapes = targetRoot.GetFirstChild<CommonSlideData>()?.ShapeTree;
+                    if (csdShapes != null)
+                    {
+                        foreach (var sp in csdShapes.Elements<Shape>())
+                        {
+                            foreach (var para in sp.TextBody?.Elements<Drawing.Paragraph>() ?? Enumerable.Empty<Drawing.Paragraph>())
+                            {
+                                var pProps = para.ParagraphProperties ?? (para.ParagraphProperties = new Drawing.ParagraphProperties());
+                                pProps.RightToLeft = rtl;
+                            }
+                        }
+                    }
+                    // Resolve the master that owns this layout (or self when targetPart
+                    // is itself a SlideMasterPart) and write the default into txStyles.
+                    SlideMasterPart? mp2 = targetPart switch
+                    {
+                        SlideLayoutPart lp2 => lp2.SlideMasterPart,
+                        SlideMasterPart smp => smp,
+                        _ => null,
+                    };
+                    if (mp2?.SlideMaster is SlideMaster sm)
+                    {
+                        var txStyles = sm.TextStyles ?? (sm.TextStyles = new TextStyles());
+                        void Stamp<T>() where T : OpenXmlCompositeElement, new()
+                        {
+                            var st = txStyles.GetFirstChild<T>() ?? txStyles.AppendChild(new T());
+                            var lvl1 = st.GetFirstChild<Drawing.Level1ParagraphProperties>()
+                                ?? st.AppendChild(new Drawing.Level1ParagraphProperties());
+                            lvl1.RightToLeft = rtl;
+                        }
+                        Stamp<BodyStyle>();
+                        Stamp<TitleStyle>();
+                        Stamp<OtherStyle>();
+                    }
+                    break;
+                }
                 default:
                     if (unsupported.Count == 0)
-                        unsupported.Add($"{key} (valid slidemaster/slidelayout props: background, background.mode, background.alpha, background.scale, name)");
+                        unsupported.Add($"{key} (valid slidemaster/slidelayout props: background, background.mode, background.alpha, background.scale, name, direction)");
                     else
                         unsupported.Add(key);
                     break;

@@ -791,6 +791,15 @@ public partial class PowerPointHandler
             if (pProps.RightToLeft?.HasValue == true)
                 node.Format["direction"] = pProps.RightToLeft.Value ? "rtl" : "ltr";
         }
+        // Inherit direction from slideLayout / slideMaster placeholder defaults
+        // when the shape itself doesn't declare one. Surfaced as
+        // `effective.direction` (mirrors the Word effective.* idiom).
+        if (!node.Format.ContainsKey("direction") && part is SlidePart slidePart)
+        {
+            bool? inherited = ResolveInheritedDirection(slidePart);
+            if (inherited.HasValue)
+                node.Format["effective.direction"] = inherited.Value ? "rtl" : "ltr";
+        }
 
         // Count paragraphs regardless of depth
         if (shape.TextBody != null)
@@ -1673,6 +1682,52 @@ public partial class PowerPointHandler
                 return presPart.Presentation?.DefaultTextStyle;
         }
 
+        return null;
+    }
+
+    /// <summary>
+    /// Walk slideLayout → slideMaster placeholder defaults looking for an
+    /// explicit pPr.RightToLeft. Returns the first hit (true/false) or null
+    /// when no ancestor declares a direction. Used by ShapeToNode to populate
+    /// `effective.direction` when the slide-level shape doesn't set it itself.
+    /// </summary>
+    private static bool? ResolveInheritedDirection(SlidePart slidePart)
+    {
+        bool? Probe(OpenXmlElement? root)
+        {
+            if (root == null) return null;
+            foreach (var sp in root.Descendants<Shape>())
+            {
+                foreach (var para in sp.TextBody?.Elements<Drawing.Paragraph>() ?? Enumerable.Empty<Drawing.Paragraph>())
+                {
+                    var rtl = para.ParagraphProperties?.RightToLeft;
+                    if (rtl?.HasValue == true) return rtl.Value;
+                }
+            }
+            return null;
+        }
+
+        var layoutHit = Probe(slidePart.SlideLayoutPart?.SlideLayout?.CommonSlideData?.ShapeTree);
+        if (layoutHit.HasValue) return layoutHit;
+
+        var masterHit = Probe(slidePart.SlideLayoutPart?.SlideMasterPart?.SlideMaster?.CommonSlideData?.ShapeTree);
+        if (masterHit.HasValue) return masterHit;
+
+        // Final fallback: master-wide <p:txStyles> defaults
+        // (bodyStyle/titleStyle/otherStyle Level1 lvl1pPr rtl). Set on
+        // /slidelayout[N] or /slidemaster[N] with --prop direction=rtl writes
+        // here; this is the only inheritance surface for blank layouts that
+        // ship without placeholder shapes.
+        var txStyles = slidePart.SlideLayoutPart?.SlideMasterPart?.SlideMaster?.TextStyles;
+        if (txStyles != null)
+        {
+            foreach (var styleEl in txStyles.ChildElements)
+            {
+                var lvl1 = (styleEl as OpenXmlCompositeElement)?.GetFirstChild<Drawing.Level1ParagraphProperties>();
+                var rtl = lvl1?.RightToLeft;
+                if (rtl?.HasValue == true) return rtl.Value;
+            }
+        }
         return null;
     }
 }
