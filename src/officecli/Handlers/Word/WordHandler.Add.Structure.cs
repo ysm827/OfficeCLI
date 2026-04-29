@@ -221,10 +221,13 @@ public partial class WordHandler
 
         // Insert reference in document body at the requested index, keeping
         // pPr as first child (InsertIntoParagraph clamps forward past pPr).
-        var fnRefRun = new Run(
-            new RunProperties(new RunStyle { Val = "FootnoteReference" }),
-            new FootnoteReference { Id = fnId }
-        );
+        // CONSISTENCY(rtl-cascade): if the host paragraph is RTL, stamp
+        // <w:rtl/> on the reference run's rPr so the superscript number
+        // renders on the correct side of an Arabic / Hebrew paragraph.
+        var fnRefRPr = new RunProperties(new RunStyle { Val = "FootnoteReference" });
+        if (fnPara.ParagraphProperties?.BiDi != null)
+            fnRefRPr.AppendChild(new RightToLeftText());
+        var fnRefRun = new Run(fnRefRPr, new FootnoteReference { Id = fnId });
         InsertIntoParagraph(fnPara, fnRefRun, index);
 
         var resultPath = $"/footnote[{fnId}]";
@@ -269,10 +272,12 @@ public partial class WordHandler
 
         // Insert reference in document body at the requested index, keeping
         // pPr as first child (InsertIntoParagraph clamps forward past pPr).
-        var enRefRun = new Run(
-            new RunProperties(new RunStyle { Val = "EndnoteReference" }),
-            new EndnoteReference { Id = enId }
-        );
+        // CONSISTENCY(rtl-cascade): mirror the footnote case — RTL host
+        // paragraphs stamp <w:rtl/> on the reference run's rPr.
+        var enRefRPr = new RunProperties(new RunStyle { Val = "EndnoteReference" });
+        if (enPara.ParagraphProperties?.BiDi != null)
+            enRefRPr.AppendChild(new RightToLeftText());
+        var enRefRun = new Run(enRefRPr, new EndnoteReference { Id = enId });
         InsertIntoParagraph(enPara, enRefRun, index);
 
         var resultPath = $"/endnote[{enId}]";
