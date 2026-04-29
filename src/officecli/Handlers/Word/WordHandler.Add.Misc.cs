@@ -938,6 +938,24 @@ public partial class WordHandler
             sdtRun.AppendChild(sdtProps);
             var sdtContent = new SdtContentRun();
             var contentRun = new Run(new Text(sdtText) { Space = SpaceProcessingModeValues.Preserve });
+
+            // CONSISTENCY(rtl-cascade): mirror AddRun (Add.Text.cs:373-376).
+            // When the host paragraph is direction=rtl (pPr/bidi or mark
+            // rPr/rtl), the new contentRun must carry rPr/rtl — paragraph
+            // mark rPr does not cascade to inner runs in OOXML; only style
+            // does. Without this, SDT body in an RTL paragraph renders LTR.
+            if (parent is Paragraph hostPara && hostPara.ParagraphProperties is { } hostPPr)
+            {
+                var hostBidi = hostPPr.GetFirstChild<BiDi>();
+                var hostMarkRtl = hostPPr.ParagraphMarkRunProperties?
+                    .GetFirstChild<RightToLeftText>();
+                if (hostBidi != null || hostMarkRtl != null)
+                {
+                    var crProps = contentRun.RunProperties ??= new RunProperties();
+                    if (crProps.GetFirstChild<RightToLeftText>() == null)
+                        crProps.AppendChild(new RightToLeftText());
+                }
+            }
             sdtContent.AppendChild(contentRun);
             sdtRun.AppendChild(sdtContent);
 
