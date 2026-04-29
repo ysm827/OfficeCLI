@@ -433,10 +433,52 @@ public partial class WordHandler
         // Anything still unconsumed is recorded as silent-drop so the CLI
         // layer can surface a WARNING. CONSISTENCY(add-set-symmetry).
         var rPropsForFallback = para.Descendants<RunProperties>().FirstOrDefault();
+        // Set of bare (no-dot) keys that the curated text/run block above has
+        // already consumed. Anything else bare is run-level (lang, bidi,
+        // kern, …) and must reach ApplyRunFormatting / TypedAttributeFallback
+        // — otherwise paragraph-add silently drops them while run-level Set /
+        // Add accept them, breaking add/set symmetry.
+        // CONSISTENCY(add-set-symmetry).
+        var bareConsumed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "type", "text", "html", "anchor", "anchorId", "anchorid",
+            "style", "styleid", "stylename",
+            "alignment", "align", "direction", "dir", "bidi",
+            "firstlineindent", "leftindent", "indentleft", "indent",
+            "rightindent", "indentright", "hangingindent", "hanging",
+            "spacebefore", "spaceafter", "linespacing", "lineSpacing",
+            "keepnext", "keepwithnext", "keeplines", "keeptogether",
+            "pagebreakbefore", "break",
+            "numid", "numId", "ilvl", "numlevel", "numLevel",
+            "outlinelevel", "outlineLevel",
+            "tabs", "tabstops",
+            "border", "borders", "shd", "shading",
+            "font", "size", "bold", "italic", "color", "highlight",
+            "underline", "strike", "strikethrough", "doublestrike", "dstrike",
+            "vanish", "outline", "shadow", "emboss", "imprint", "noproof",
+            "rtl", "vertAlign", "vertalign", "superscript", "subscript",
+            "charspacing", "charSpacing", "letterspacing", "letterSpacing",
+            "caps", "smallcaps",
+            "boldcs", "italiccs", "sizecs",
+            "field", "formula", "ref", "id",
+        };
         foreach (var (key, value) in properties)
         {
-            if (!key.Contains('.')) continue;
             if (key.StartsWith("pbdr", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!key.Contains('.') && bareConsumed.Contains(key)) continue;
+            if (!key.Contains('.'))
+            {
+                // Bare run-level key (lang, bidi, kern, …) — try
+                // ApplyRunFormatting on the existing run rPr first, then on
+                // the paragraph mark rPr (so it survives even with no text
+                // run). Falls through to TypedAttributeFallback below.
+                if (rPropsForFallback != null
+                    && ApplyRunFormatting(rPropsForFallback, key, value)) continue;
+                var bareMarkRPr = pProps.GetFirstChild<ParagraphMarkRunProperties>()
+                    ?? pProps.AppendChild(new ParagraphMarkRunProperties());
+                if (ApplyRunFormatting(bareMarkRPr, key, value)) continue;
+                if (bareMarkRPr.ChildElements.Count == 0) bareMarkRPr.Remove();
+            }
             // CONSISTENCY(font-dotted-alias): same skip-list as run-add.
             switch (key.ToLowerInvariant())
             {
