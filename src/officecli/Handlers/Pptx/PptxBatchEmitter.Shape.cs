@@ -263,10 +263,42 @@ public static partial class PptxBatchEmitter
             paraParent = $"{shapeParent}/paragraph[{paraIdx}]";
         }
 
-        foreach (var run in runs)
+        // R8-7: AddShape / AddTextbox / AddPlaceholder seed the txBody with
+        // one paragraph carrying one empty <a:r>. If we emit every run as
+        // `add`, replay produces a phantom empty run[1] before our content
+        // and drifts by +1 run per round-trip. Mirror the single-paragraph
+        // rewrite: the FIRST run of the FIRST paragraph rewrites the seeded
+        // empty run via `set .../run[1]` rather than `add run`.
+        bool firstRunOnSeededParagraph = firstParagraph && runs.Count > 0;
+        for (int ri = 0; ri < runs.Count; ri++)
         {
-            EmitRun(run, paraParent, items);
+            if (ri == 0 && firstRunOnSeededParagraph)
+                EmitFirstRunAsSet(runs[ri], paraParent, items);
+            else
+                EmitRun(runs[ri], paraParent, items);
         }
+    }
+
+    // R8-7: rewrite the seeded <a:r> via `set` rather than appending another
+    // one. Mirrors EmitRun but emits a single set item against
+    // <paraParent>/run[1]. Empty/lang-only seeded runs in the source are
+    // filtered the same way EmitRun filters; an empty rewrite is a no-op set
+    // with no props.
+    private static void EmitFirstRunAsSet(DocumentNode runNode, string paraParent, List<BatchItem> items)
+    {
+        var props = FilterEmittableProps(runNode.Format);
+        bool hasText = !string.IsNullOrEmpty(runNode.Text);
+        if (!hasText && props.Count > 0
+            && props.Keys.All(k => RunDefaultOnlyKeys.Contains(k)))
+            return;
+        if (!hasText && props.Count == 0) return;
+        if (hasText) props["text"] = runNode.Text!;
+        items.Add(new BatchItem
+        {
+            Command = "set",
+            Path = $"{paraParent}/run[1]",
+            Props = props.Count > 0 ? props : null,
+        });
     }
 
     // Run-level Format keys that AddRun seeds on every new <a:r> regardless
