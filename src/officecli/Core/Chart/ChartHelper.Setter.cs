@@ -795,6 +795,24 @@ internal static partial class ChartHelper
                         unsupported.Add(key);
                         break;
                     }
+                    // Reject on 2D chart types: PowerPoint accepts the <c:view3D>
+                    // tag in OOXML but only renders 3D perspective when the
+                    // chartType element is itself 3D (bar3D/column3D/line3D/
+                    // pie3D/area3D/surface3D). Silently writing it on a 2D
+                    // chart looks fine in Get but renders flat in real PPT.
+                    // Hint: switch chartType to a *3D variant.
+                    var v3dPlotAreaProbe = chart.GetFirstChild<C.PlotArea>();
+                    bool is3DChartType = v3dPlotAreaProbe != null && (
+                        v3dPlotAreaProbe.GetFirstChild<C.Bar3DChart>() != null
+                        || v3dPlotAreaProbe.GetFirstChild<C.Line3DChart>() != null
+                        || v3dPlotAreaProbe.GetFirstChild<C.Area3DChart>() != null
+                        || v3dPlotAreaProbe.GetFirstChild<C.Pie3DChart>() != null
+                        || v3dPlotAreaProbe.GetFirstChild<C.Surface3DChart>() != null);
+                    if (!is3DChartType)
+                    {
+                        unsupported.Add(key);
+                        break;
+                    }
                     var v3dParts = value.Split(',');
                     chart.RemoveAllChildren<C.View3D>();
                     var view3d = new C.View3D();
