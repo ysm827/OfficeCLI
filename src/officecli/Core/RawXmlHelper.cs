@@ -360,9 +360,17 @@ internal static class RawXmlHelper
         foreach (var part in package.GetAllParts())
         {
             // Only inspect XML parts; binary streams (images, fonts, embedded
-            // OLE) don't participate in schema validation.
+            // OLE) don't participate in schema validation. The naive
+            // ContentType.Contains("xml") screen matches every OOXML content
+            // type via the "openxmlformats" substring (e.g.
+            // "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            // for an OLE-embedded .docx), so a perfectly valid binary
+            // OOXML embedding was mis-classified as malformed XML on every
+            // validate run. RFC 7303 / OOXML restrict actual XML content types
+            // to the "+xml" structured-suffix or the plain text/xml family;
+            // gate the preflight on those instead.
             var ct = part.ContentType ?? "";
-            if (!ct.Contains("xml", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!IsXmlContentType(ct)) continue;
             try
             {
                 using var s = part.GetStream(FileMode.Open, FileAccess.Read);
@@ -384,6 +392,20 @@ internal static class RawXmlHelper
             }
         }
         return errors;
+    }
+
+    private static bool IsXmlContentType(string ct)
+    {
+        if (string.IsNullOrEmpty(ct)) return false;
+        // Drop parameters (e.g. "; charset=utf-8") and lowercase the type.
+        var semi = ct.IndexOf(';');
+        var bare = (semi >= 0 ? ct.Substring(0, semi) : ct).Trim().ToLowerInvariant();
+        // Structured-suffix form: anything/anything+xml — covers every OOXML
+        // schema part (...wordprocessingml.document.main+xml,
+        // ...presentationml.slide+xml, ...drawingml.theme+xml, etc.).
+        if (bare.EndsWith("+xml")) return true;
+        // Generic XML content types.
+        return bare == "application/xml" || bare == "text/xml";
     }
 
     private static void TryAddNamespace(XmlNamespaceManager nsManager, string prefix, string uri)
