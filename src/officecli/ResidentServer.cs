@@ -1289,29 +1289,57 @@ public class ResidentServer : IDisposable
                     Console.Error.WriteLine("Forms view is only supported for .docx files.");
             }
             else
-                Console.WriteLine($"Unknown mode: {mode}. Available: text, annotated, outline, stats, issues, html, svg, screenshot, forms");
+                // Unknown mode is a caller bug, not a successful view: throw
+                // the same CliException CommandBuilder.View.cs raises in the
+                // direct-mode path so the envelope reports success=false /
+                // code=invalid_value instead of stdout-ing the error message
+                // as the view payload.
+                throw new OfficeCli.Core.CliException($"Unknown mode: {mode}. Available: text, annotated, outline, stats, issues, html, svg, screenshot, forms")
+                {
+                    Code = "invalid_value",
+                    ValidValues = ["text", "annotated", "outline", "stats", "issues", "html", "svg", "screenshot", "pdf", "forms"]
+                };
         }
         else
         {
-            var output = mode!.ToLowerInvariant() switch
+            var modeKey = mode!.ToLowerInvariant();
+            string output;
+            switch (modeKey)
             {
-                "text" or "t" => _handler.ViewAsText(start, end, maxLines, cols),
-                "annotated" or "a" => _handler.ViewAsAnnotated(start, end, maxLines, cols),
-                "outline" or "o" => _handler.ViewAsOutline(),
-                "stats" or "s" => pageCountValue.HasValue
-                    ? $"Pages: {pageCountValue}\n" + _handler.ViewAsStats()
-                    : _handler.ViewAsStats(),
-                "issues" or "i" => OutputFormatter.FormatIssues(_handler.ViewAsIssues(issueType, limit), format),
-                "forms" or "f" => _handler switch
-                {
-                    OfficeCli.Handlers.WordHandler wfh => wfh.ViewAsForms(),
-                    OfficeCli.Core.Plugins.FormatHandlerProxy fp
-                        => fp.ViewAsFormsJson()?.ToJsonString(OutputFormatter.PublicJsonOptions)
-                           ?? "Forms view is not supported by the format-handler plugin.",
-                    _ => "Forms view is only supported for .docx files."
-                },
-                _ => $"Unknown mode: {mode}. Available: text, annotated, outline, stats, issues, html, svg, screenshot, forms"
-            };
+                case "text" or "t":
+                    output = _handler.ViewAsText(start, end, maxLines, cols); break;
+                case "annotated" or "a":
+                    output = _handler.ViewAsAnnotated(start, end, maxLines, cols); break;
+                case "outline" or "o":
+                    output = _handler.ViewAsOutline(); break;
+                case "stats" or "s":
+                    output = pageCountValue.HasValue
+                        ? $"Pages: {pageCountValue}\n" + _handler.ViewAsStats()
+                        : _handler.ViewAsStats(); break;
+                case "issues" or "i":
+                    output = OutputFormatter.FormatIssues(_handler.ViewAsIssues(issueType, limit), format); break;
+                case "forms" or "f":
+                    output = _handler switch
+                    {
+                        OfficeCli.Handlers.WordHandler wfh => wfh.ViewAsForms(),
+                        OfficeCli.Core.Plugins.FormatHandlerProxy fp
+                            => fp.ViewAsFormsJson()?.ToJsonString(OutputFormatter.PublicJsonOptions)
+                               ?? throw new OfficeCli.Core.CliException("Forms view is not supported by the format-handler plugin.")
+                                   { Code = "unsupported_type" },
+                        _ => throw new OfficeCli.Core.CliException("Forms view is only supported for .docx files.")
+                        {
+                            Code = "unsupported_type",
+                            ValidValues = ["text", "annotated", "outline", "stats", "issues", "html", "svg", "screenshot", "pdf", "forms"]
+                        }
+                    };
+                    break;
+                default:
+                    throw new OfficeCli.Core.CliException($"Unknown mode: {mode}. Available: text, annotated, outline, stats, issues, html, svg, screenshot, forms")
+                    {
+                        Code = "invalid_value",
+                        ValidValues = ["text", "annotated", "outline", "stats", "issues", "html", "svg", "screenshot", "pdf", "forms"]
+                    };
+            }
             Console.WriteLine(output);
         }
     }
