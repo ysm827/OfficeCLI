@@ -1425,10 +1425,23 @@ public partial class PowerPointHandler
                     {
                         var firstRun = textBody.Descendants<Drawing.Run>().FirstOrDefault();
                         var runProps = firstRun?.RunProperties?.CloneNode(true) as Drawing.RunProperties;
+                        // Snapshot the existing first paragraph's properties
+                        // (algn, lvl, marL, indent, …) so a single set call
+                        // that bundles `align=center` with `text='X'` doesn't
+                        // lose the alignment when text rebuilds the
+                        // paragraph tree. Iteration order on a Dictionary is
+                        // insertion order on .NET but callers shouldn't have
+                        // to know that — preserve align by cloning the
+                        // existing pPr BEFORE wiping paragraphs, then
+                        // re-attach on each rebuilt paragraph.
+                        var firstPara = textBody.GetFirstChild<Drawing.Paragraph>();
+                        var savedPPr = firstPara?.ParagraphProperties?.CloneNode(true) as Drawing.ParagraphProperties;
                         textBody.RemoveAllChildren<Drawing.Paragraph>();
                         foreach (var line in lines)
                         {
                             var para = new Drawing.Paragraph();
+                            if (savedPPr != null)
+                                para.ParagraphProperties = savedPPr.CloneNode(true) as Drawing.ParagraphProperties;
                             AppendLineWithTabs(para, line, seg =>
                             {
                                 var r = new Drawing.Run();
