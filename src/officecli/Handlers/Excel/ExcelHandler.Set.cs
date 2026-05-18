@@ -515,8 +515,20 @@ public partial class ExcelHandler
                         evalResult = inner;
                     if (evalResult is { IsNumeric: true })
                     {
-                        cell.CellValue = new CellValue(evalResult.ToCellValueText());
-                        cell.DataType = null;
+                        // IEEE-754 ±Infinity / NaN have no OOXML representation;
+                        // writing "<v>-Infinity</v>" produces a file Excel refuses
+                        // to open. Promote to #NUM! so the cell switches to t="e".
+                        var nv = evalResult.NumericValue!.Value;
+                        if (double.IsNaN(nv) || double.IsInfinity(nv))
+                        {
+                            cell.CellValue = new CellValue("#NUM!");
+                            cell.DataType = new DocumentFormat.OpenXml.EnumValue<CellValues>(CellValues.Error);
+                        }
+                        else
+                        {
+                            cell.CellValue = new CellValue(evalResult.ToCellValueText());
+                            cell.DataType = null;
+                        }
                     }
                     else if (evalResult is { IsString: true })
                     {
