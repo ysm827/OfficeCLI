@@ -201,7 +201,7 @@ internal static partial class ChartHelper
         var errValType = typeStr switch
         {
             "fixed" or "fixedvalue" => C.ErrorValues.FixedValue,
-            "percent" or "pct" => C.ErrorValues.Percentage,
+            "percent" or "pct" or "percentage" => C.ErrorValues.Percentage,
             "stddev" or "standarddeviation" => C.ErrorValues.StandardDeviation,
             "stderr" or "standarderror" => C.ErrorValues.StandardError,
             _ => C.ErrorValues.FixedValue
