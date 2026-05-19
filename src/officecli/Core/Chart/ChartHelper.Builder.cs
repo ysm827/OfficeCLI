@@ -1126,6 +1126,14 @@ internal static partial class ChartHelper
     {
         series.RemoveAllChildren<C.ChartShapeProperties>();
         var spPr = new C.ChartShapeProperties();
+        if (color.Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            spPr.AppendChild(new Drawing.NoFill());
+            var serText0 = series.GetFirstChild<C.SeriesText>();
+            if (serText0 != null) serText0.InsertAfterSelf(spPr);
+            else series.PrependChild(spPr);
+            return;
+        }
         var solidFill = new Drawing.SolidFill();
         solidFill.AppendChild(BuildChartColorElement(color));
         spPr.AppendChild(solidFill);

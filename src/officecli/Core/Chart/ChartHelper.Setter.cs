@@ -482,9 +482,16 @@ internal static partial class ChartHelper
                                 dPt.AppendChild(new C.Index { Val = (uint)ci });
                                 dPt.AppendChild(new C.InvertIfNegative { Val = false });
                                 var spPr = new C.ChartShapeProperties();
-                                var solidFill = new Drawing.SolidFill();
-                                solidFill.AppendChild(BuildChartColorElement(colorList[ci]));
-                                spPr.AppendChild(solidFill);
+                                if (colorList[ci].Equals("none", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    spPr.AppendChild(new Drawing.NoFill());
+                                }
+                                else
+                                {
+                                    var solidFill = new Drawing.SolidFill();
+                                    solidFill.AppendChild(BuildChartColorElement(colorList[ci]));
+                                    spPr.AppendChild(solidFill);
+                                }
                                 dPt.AppendChild(spPr);
 
                                 // Insert dPt before cat/val data — after Order/SerText/spPr header elements
