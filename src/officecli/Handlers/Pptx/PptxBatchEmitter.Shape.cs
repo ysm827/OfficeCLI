@@ -218,6 +218,19 @@ public static partial class PptxBatchEmitter
     {
         var full = ppt.Get(grpNode.Path);
         var props = FilterEmittableProps(full.Format);
+        // CONSISTENCY(zorder): direct Get on /slide[N]/group[K] strips zorder
+        // because the NodeBuilder branch that emits it only runs when the
+        // group surfaces as a *child* of the slide enumeration (the source
+        // grpNode passed in). Without preserving zorder, a slide with
+        // [group, shape] at zorders [1, 2] replays as [shape, group] = [1, 2]
+        // — the group lands AFTER the shape because AddGroup defaults to
+        // append. Mirror group.json (now declares add/set=true on zorder).
+        if (!props.ContainsKey("zorder")
+            && grpNode.Format.TryGetValue("zorder", out var grpZ) && grpZ != null)
+        {
+            var s = grpZ.ToString();
+            if (!string.IsNullOrEmpty(s)) props["zorder"] = s!;
+        }
         DeferSlideJumpLink(props, replayPath, ctx);
 
         items.Add(new BatchItem
