@@ -621,7 +621,13 @@ internal static partial class ChartHelper
             var spec = ReadGradientSpec(firstGradFill);
             node.Format["gradient"] = spec ?? "true";
         }
+        // Skip reference-line overlay series — their marker (val=none) is a
+        // structural side-effect of AddReferenceLine, not a user-set marker.
+        // Including them caused chart-level `marker=none` to be emitted on
+        // any chart whose first real series had no explicit marker, then
+        // dump→replay applied marker=none to series 1.
         var firstMarkerSym = allSer
+            .Where(s => !IsReferenceLineSeries(s))
             .Select(s => s.GetFirstChild<C.Marker>()?.GetFirstChild<C.Symbol>()?.Val)
             .FirstOrDefault(v => v?.HasValue == true);
         if (firstMarkerSym != null) node.Format["marker"] = firstMarkerSym.InnerText;
