@@ -218,43 +218,65 @@ internal static partial class ChartHelper
                             dl.AppendChild(new C.ShowCategoryName { Val = parts.Contains("category") || parts.Contains("all") });
                             dl.AppendChild(new C.ShowSeriesName { Val = parts.Contains("series") || parts.Contains("all") });
                             dl.AppendChild(new C.ShowPercent { Val = parts.Contains("percent") || parts.Contains("all") });
-                            // If a position value was given, apply it as dLblPos
+                            // If a position value was given, apply it as dLblPos —
+                            // but ONLY when the chartType's CT_DLbls accepts the
+                            // requested value per ST_DLblPos*. Otherwise the
+                            // file is schema-invalid (e.g. bestFit on bar lands
+                            // outside ST_DLblPosBar's enum). The `labelpos` case
+                            // below has equivalent per-type guards; mirror them
+                            // here so `dataLabels=bestFit` on bar emits ShowValue
+                            // etc. but skips the invalid dLblPos rather than
+                            // producing a broken file.
                             if (isPositionValue)
                             {
                                 var posVal = parts.First(p => positionValues.Contains(p));
-                                var dLblPos = posVal switch
+                                // Compute per-chart-type allowance.
+                                var ctName = chartTypeEl.LocalName;
+                                var isBarLike = ctName is "barChart" or "bar3DChart" or "bubbleChart";
+                                var isLineLike = ctName is "lineChart" or "line3DChart"
+                                    or "scatterChart" or "stockChart";
+                                var isPieLike = ctName is "pieChart" or "pie3DChart" or "doughnutChart";
+                                // Area / radar: ST_DLblPos doesn't apply at all.
+                                var isAreaRadar = ctName is "areaChart" or "area3DChart" or "radarChart";
+
+                                bool allowed = !isAreaRadar && posVal switch
                                 {
-                                    "outsideend" or "outend" => C.DataLabelPositionValues.OutsideEnd,
-                                    "insideend" => C.DataLabelPositionValues.InsideEnd,
-                                    "insidebase" => C.DataLabelPositionValues.InsideBase,
-                                    "center" or "ctr" => C.DataLabelPositionValues.Center,
-                                    "top" or "t" => C.DataLabelPositionValues.Top,
-                                    "bottom" or "b" => C.DataLabelPositionValues.Bottom,
-                                    "left" or "l" => C.DataLabelPositionValues.Left,
-                                    "right" or "r" => C.DataLabelPositionValues.Right,
-                                    "bestfit" => C.DataLabelPositionValues.BestFit,
-                                    _ => C.DataLabelPositionValues.OutsideEnd
+                                    "bestfit" => isPieLike,
+                                    "outsideend" or "outend" => isBarLike || isPieLike,
+                                    "insideend" => isBarLike || isPieLike,
+                                    "insidebase" => isBarLike,
+                                    "center" or "ctr" => isBarLike || isLineLike || isPieLike,
+                                    "top" or "t" => isLineLike,
+                                    "bottom" or "b" => isLineLike,
+                                    "left" or "l" => isLineLike,
+                                    "right" or "r" => isLineLike,
+                                    _ => false,
                                 };
-                                dl.AppendChild(new C.DataLabelPosition { Val = dLblPos });
+
+                                if (allowed)
+                                {
+                                    var dLblPos = posVal switch
+                                    {
+                                        "outsideend" or "outend" => C.DataLabelPositionValues.OutsideEnd,
+                                        "insideend" => C.DataLabelPositionValues.InsideEnd,
+                                        "insidebase" => C.DataLabelPositionValues.InsideBase,
+                                        "center" or "ctr" => C.DataLabelPositionValues.Center,
+                                        "top" or "t" => C.DataLabelPositionValues.Top,
+                                        "bottom" or "b" => C.DataLabelPositionValues.Bottom,
+                                        "left" or "l" => C.DataLabelPositionValues.Left,
+                                        "right" or "r" => C.DataLabelPositionValues.Right,
+                                        "bestfit" => C.DataLabelPositionValues.BestFit,
+                                        _ => C.DataLabelPositionValues.OutsideEnd
+                                    };
+                                    dl.AppendChild(new C.DataLabelPosition { Val = dLblPos });
+                                }
                             }
                             // Insert dLbls before dropLines/hiLowLines/upDownBars/gapWidth/overlap/
                             // showMarker/holeSize/firstSliceAngle/axId per schema order. CT_StockChart
                             // and CT_LineChart both place dLbls before dropLines/hiLowLines/upDownBars;
                             // anchoring only on axId would land dLbls after hiLowLines (validator emits
                             // "unexpected child element 'dLbls' ... expected 'axId'").
-                            var dlInsertBefore = chartTypeEl.GetFirstChild<C.DropLines>() as OpenXmlElement
-                                ?? chartTypeEl.GetFirstChild<C.HighLowLines>() as OpenXmlElement
-                                ?? chartTypeEl.GetFirstChild<C.UpDownBars>() as OpenXmlElement
-                                ?? chartTypeEl.GetFirstChild<C.GapWidth>() as OpenXmlElement
-                                ?? chartTypeEl.GetFirstChild<C.Overlap>() as OpenXmlElement
-                                ?? chartTypeEl.GetFirstChild<C.ShowMarker>() as OpenXmlElement
-                                ?? chartTypeEl.GetFirstChild<C.HoleSize>() as OpenXmlElement
-                                ?? chartTypeEl.GetFirstChild<C.FirstSliceAngle>() as OpenXmlElement
-                                ?? chartTypeEl.GetFirstChild<C.AxisId>();
-                            if (dlInsertBefore != null)
-                                chartTypeEl.InsertBefore(dl, dlInsertBefore);
-                            else
-                                chartTypeEl.AppendChild(dl);
+                            InsertChartGroupDLbls(chartTypeEl, dl);
                         }
                     }
                     break;
@@ -381,7 +403,11 @@ internal static partial class ChartHelper
                             dLbls.AppendChild(new C.ShowSeriesName { Val = false });
                             dLbls.AppendChild(new C.ShowPercent { Val = false });
                             dLbls.AppendChild(new C.ShowBubbleSize { Val = false });
-                            chartGroup.PrependChild(dLbls);
+                            // CONSISTENCY(insert-chart-group-dlbls): previous
+                            // PrependChild landed dLbls at position 0 — before
+                            // barDir/ser — producing an invalid CT_*Chart.
+                            // Centralized helper picks the correct schema spot.
+                            InsertChartGroupDLbls(chartGroup, dLbls);
                             existingLabels = new List<C.DataLabels> { dLbls };
                         }
                     }
@@ -417,6 +443,51 @@ internal static partial class ChartHelper
                         ApplyAxisTextProperties(axis, value);
                     foreach (var axis in plotArea2.Elements<C.DateAxis>())
                         ApplyAxisTextProperties(axis, value);
+                    break;
+                }
+
+                case "cataxistype" or "categoryaxistype":
+                {
+                    // Swap the category axis kind between CategoryAxis and DateAxis.
+                    // The two share CT_AxBase children (axId/scaling/delete/axPos/…),
+                    // so we move every child of the existing axis to the new one
+                    // to preserve any prior axis tweaks (title, gridlines, etc).
+                    var plotArea2 = chart.GetFirstChild<C.PlotArea>();
+                    if (plotArea2 == null) { unsupported.Add(key); break; }
+                    var lowerVal = value.ToLowerInvariant();
+                    var wantDate = lowerVal is "date" or "dateax" or "time";
+                    var wantCat = lowerVal is "cat" or "category" or "auto" or "text";
+                    if (!wantDate && !wantCat) { unsupported.Add(key); break; }
+
+                    OpenXmlCompositeElement? existing =
+                        (OpenXmlCompositeElement?)plotArea2.GetFirstChild<C.CategoryAxis>()
+                        ?? plotArea2.GetFirstChild<C.DateAxis>();
+                    if (existing == null) { unsupported.Add(key); break; }
+                    var isAlreadyDate = existing is C.DateAxis;
+                    if (wantDate == isAlreadyDate) break; // already the requested kind
+
+                    OpenXmlCompositeElement replacement = wantDate
+                        ? new C.DateAxis()
+                        : new C.CategoryAxis();
+                    // CONSISTENCY(catax-dateax-stripcatonly): CT_CatAx defines
+                    // <auto>, <lblAlgn>, <lblOffset>, <noMultiLvlLbl> that
+                    // CT_DateAxis does NOT accept. BuildCategoryAxis emits
+                    // <lblAlgn> + <lblOffset> by default, so a fresh cat→date
+                    // conversion would always carry them across and produce a
+                    // schema-invalid <c:dateAx>. Strip them on the cat→date
+                    // path; date→cat preserves everything (no incompatible
+                    // elements in the reverse direction).
+                    var catOnlyLocalNames = new System.Collections.Generic.HashSet<string>(
+                        System.StringComparer.Ordinal)
+                    { "auto", "lblAlgn", "lblOffset", "noMultiLvlLbl" };
+                    foreach (var child in existing.ChildElements.ToList())
+                    {
+                        child.Remove();
+                        if (wantDate && catOnlyLocalNames.Contains(child.LocalName)) continue;
+                        replacement.AppendChild(child);
+                    }
+                    plotArea2.InsertBefore(replacement, existing);
+                    existing.Remove();
                     break;
                 }
 
@@ -777,6 +848,7 @@ internal static partial class ChartHelper
                 {
                     var plotArea2 = chart.GetFirstChild<C.PlotArea>();
                     if (plotArea2 == null) { unsupported.Add(key); break; }
+                    bool markerRejected = false;
                     foreach (var ser in plotArea2.Descendants<OpenXmlCompositeElement>().Where(e => e.LocalName == "ser"))
                     {
                         // Schema gate: CT_BarSer / CT_AreaSer / CT_PieSer / CT_BubbleSer
@@ -786,8 +858,9 @@ internal static partial class ChartHelper
                         // series accept markers.
                         if (ser is not (C.LineChartSeries or C.ScatterChartSeries or C.RadarChartSeries))
                             continue;
-                        ApplySeriesMarker(ser, value);
+                        if (!ApplySeriesMarker(ser, value)) markerRejected = true;
                     }
+                    if (markerRejected) unsupported.Add(key);
                     break;
                 }
 
@@ -1489,8 +1562,14 @@ internal static partial class ChartHelper
                     var plotArea2 = chart.GetFirstChild<C.PlotArea>();
                     var catAx = plotArea2?.GetFirstChild<C.CategoryAxis>();
                     if (catAx == null) { unsupported.Add(key); break; }
+                    // CONSISTENCY(catax-schema-order): bare AppendChild lands
+                    // lblOffset after any later-order siblings already present
+                    // (e.g. tickLblSkip from a prior Set), producing an invalid
+                    // file. InsertAxisChildInOrder anchors on the schema-order
+                    // list shared across catAx setters.
                     catAx.RemoveAllChildren<C.LabelOffset>();
-                    catAx.AppendChild(new C.LabelOffset { Val = (ushort)ParseHelpers.SafeParseInt(value, "labelOffset") });
+                    InsertAxisChildInOrder(catAx,
+                        new C.LabelOffset { Val = (ushort)ParseHelpers.SafeParseInt(value, "labelOffset") });
                     break;
                 }
 
@@ -1499,8 +1578,10 @@ internal static partial class ChartHelper
                     var plotArea2 = chart.GetFirstChild<C.PlotArea>();
                     var catAx = plotArea2?.GetFirstChild<C.CategoryAxis>();
                     if (catAx == null) { unsupported.Add(key); break; }
+                    // Same schema-order rationale as labelOffset above.
                     catAx.RemoveAllChildren<C.TickLabelSkip>();
-                    catAx.AppendChild(new C.TickLabelSkip { Val = ParseHelpers.SafeParseInt(value, "tickLabelSkip") });
+                    InsertAxisChildInOrder(catAx,
+                        new C.TickLabelSkip { Val = ParseHelpers.SafeParseInt(value, "tickLabelSkip") });
                     break;
                 }
 
@@ -1994,7 +2075,14 @@ internal static partial class ChartHelper
                         dt.AppendChild(new C.ShowVerticalBorder { Val = true });
                         dt.AppendChild(new C.ShowOutlineBorder { Val = true });
                         dt.AppendChild(new C.ShowKeys { Val = true });
-                        plotArea2.AppendChild(dt);
+                        // CT_PlotArea tail order: dTable → spPr → extLst.
+                        // AppendChild lands dTable AFTER any spPr already
+                        // inserted by plotFill (and after extLst), producing
+                        // an invalid file. Anchor before spPr (or extLst).
+                        var anchor = (OpenXmlElement?)plotArea2.GetFirstChild<C.ShapeProperties>()
+                            ?? plotArea2.GetFirstChild<C.ExtensionList>();
+                        if (anchor != null) plotArea2.InsertBefore(dt, anchor);
+                        else plotArea2.AppendChild(dt);
                     }
                     break;
                 }
@@ -2128,7 +2216,7 @@ internal static partial class ChartHelper
                     break;
                 }
 
-                case "shape" or "barshape":
+                case "shape" or "barshape" or "shape3d":
                 {
                     var plotArea2 = chart.GetFirstChild<C.PlotArea>();
                     var bar3d = plotArea2?.GetFirstChild<C.Bar3DChart>();
@@ -2886,25 +2974,33 @@ internal static partial class ChartHelper
         outline.AppendChild(new Drawing.PresetDash { Val = ParseDashStyle(dashStyle) });
     }
 
-    internal static void ApplySeriesMarker(OpenXmlCompositeElement series, string markerSpec)
+    internal static bool ApplySeriesMarker(OpenXmlCompositeElement series, string markerSpec)
     {
         // Format: "style" or "style:size" or "style:size:color", e.g. "circle", "diamond:8", "square:6:FF0000"
+        // Returns false when the style token isn't supported so callers can
+        // surface UNSUPPORTED instead of silently storing a wrong shape.
+        // `picture` was previously falling through to `Circle` via the `_`
+        // switch default — silent data corruption that this method now
+        // rejects (picture markers require blipFill + an image source which
+        // isn't implemented).
         var parts = markerSpec.Split(':');
-        var style = parts[0].Trim().ToLowerInvariant() switch
+        var styleToken = parts[0].Trim().ToLowerInvariant();
+        C.MarkerStyleValues style;
+        switch (styleToken)
         {
-            "circle" => C.MarkerStyleValues.Circle,
-            "diamond" => C.MarkerStyleValues.Diamond,
-            "square" => C.MarkerStyleValues.Square,
-            "triangle" => C.MarkerStyleValues.Triangle,
-            "star" => C.MarkerStyleValues.Star,
-            "x" => C.MarkerStyleValues.X,
-            "plus" => C.MarkerStyleValues.Plus,
-            "dash" => C.MarkerStyleValues.Dash,
-            "dot" => C.MarkerStyleValues.Dot,
-            "none" => C.MarkerStyleValues.None,
-            "auto" => C.MarkerStyleValues.Auto,
-            _ => C.MarkerStyleValues.Circle
-        };
+            case "circle":   style = C.MarkerStyleValues.Circle; break;
+            case "diamond":  style = C.MarkerStyleValues.Diamond; break;
+            case "square":   style = C.MarkerStyleValues.Square; break;
+            case "triangle": style = C.MarkerStyleValues.Triangle; break;
+            case "star":     style = C.MarkerStyleValues.Star; break;
+            case "x":        style = C.MarkerStyleValues.X; break;
+            case "plus":     style = C.MarkerStyleValues.Plus; break;
+            case "dash":     style = C.MarkerStyleValues.Dash; break;
+            case "dot":      style = C.MarkerStyleValues.Dot; break;
+            case "none":     style = C.MarkerStyleValues.None; break;
+            case "auto":     style = C.MarkerStyleValues.Auto; break;
+            default:         return false; // unsupported style — caller surfaces
+        }
 
         // Snapshot existing per-series marker children so a fan-out (e.g.
         // `marker=circle` after `markerSize=10`) does not blow away
@@ -2934,14 +3030,19 @@ internal static partial class ChartHelper
         if (existingExtLst != null)
             marker.AppendChild(existingExtLst);
 
-        // Insert marker before data references (xVal, yVal, cat, val, bubbleSize)
-        // to satisfy schema order for all chart types including scatter/bubble.
-        var markerInsertBefore = (OpenXmlElement?)series.Elements().FirstOrDefault(e =>
-            e.LocalName is "xVal" or "yVal" or "cat" or "val" or "bubbleSize"
-                or "smooth" or "extLst")
-            ?? series.Elements().FirstOrDefault(e => e.LocalName == "trendline");
-        if (markerInsertBefore != null) series.InsertBefore(marker, markerInsertBefore);
-        else series.AppendChild(marker);
+        // CONSISTENCY(insert-series-child): route through the shared helper
+        // (SetterHelpers.cs:1053 InsertSeriesChildInOrder) instead of hand-
+        // rolling an anchor list. The previous local list omitted `dPt` and
+        // `dLbls`, so a marker set AFTER point.color (which inserts dPt) or
+        // after datalabels= appended after them and produced an invalid
+        // CT_LineSer. The helper's marker arm already lists the full
+        // schema-after set: [dPt, dLbls, trendline, errBars, cat, val,
+        // xVal, yVal, bubbleSize, smooth, extLst]. Per CLAUDE.md
+        // "Consistency > Robustness" — the hand-rolled list was the lone
+        // outlier; every other series-child writer already routes through
+        // InsertSeriesChildInOrder.
+        InsertSeriesChildInOrder(series, marker);
+        return true;
     }
 
     // ==================== #5 Transparency Helper ====================
@@ -3382,17 +3483,7 @@ internal static partial class ChartHelper
             dl.AppendChild(new C.ShowCategoryName { Val = false });
             dl.AppendChild(new C.ShowSeriesName { Val = false });
             dl.AppendChild(new C.ShowPercent { Val = false });
-            var insertBefore = chartTypeEl.GetFirstChild<C.DropLines>() as OpenXmlElement
-                ?? chartTypeEl.GetFirstChild<C.HighLowLines>() as OpenXmlElement
-                ?? chartTypeEl.GetFirstChild<C.UpDownBars>() as OpenXmlElement
-                ?? chartTypeEl.GetFirstChild<C.GapWidth>() as OpenXmlElement
-                ?? chartTypeEl.GetFirstChild<C.Overlap>() as OpenXmlElement
-                ?? chartTypeEl.GetFirstChild<C.ShowMarker>() as OpenXmlElement
-                ?? chartTypeEl.GetFirstChild<C.HoleSize>() as OpenXmlElement
-                ?? chartTypeEl.GetFirstChild<C.FirstSliceAngle>() as OpenXmlElement
-                ?? chartTypeEl.GetFirstChild<C.AxisId>();
-            if (insertBefore != null) chartTypeEl.InsertBefore(dl, insertBefore);
-            else chartTypeEl.AppendChild(dl);
+            InsertChartGroupDLbls(chartTypeEl, dl);
             dataLabels.Add(dl);
         }
         return dataLabels.Count > 0;

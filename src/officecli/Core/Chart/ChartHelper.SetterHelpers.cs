@@ -133,12 +133,13 @@ internal static partial class ChartHelper
                                 new Drawing.Run(
                                     new Drawing.RunProperties { Language = "en-US" },
                                     new Drawing.Text(value))))));
-                // Schema order under CT_Trendline: name, trendlineLbl, trendlineType, ...
-                var trendlineType = trendline.GetFirstChild<C.TrendlineType>();
-                if (trendlineType != null)
-                    trendline.InsertBefore(tlLbl, trendlineType);
-                else
-                    trendline.AppendChild(tlLbl);
+                // CT_Trendline schema order is:
+                //   name → trendlineType → order → period → forward → backward
+                //   → intercept → dispRSqr → dispEq → trendlineLbl
+                // trendlineLbl is the LAST child. Previous comment had this
+                // backwards and the InsertBefore landed tlLbl ahead of
+                // trendlineType, which the validator rejected.
+                trendline.AppendChild(tlLbl);
                 break;
             case "forward" or "forecastforward":
                 trendline.RemoveAllChildren<C.Forward>();
@@ -161,13 +162,29 @@ internal static partial class ChartHelper
                 trendline.AppendChild(new C.Intercept { Val = ParseHelpers.SafeParseDouble(value, "trendline.intercept") });
                 break;
             case "disprsqr" or "rsquared" or "r2" or "displayrsquared":
+            {
+                // CT_Trendline schema order (per ECMA-376 §21.2.2.211):
+                //   ... intercept → dispRSqr → dispEq → trendlineLbl → extLst
+                // dispRSqr comes BEFORE dispEq. Anchor on the first later-
+                // schema sibling so both Set orders produce valid XML.
                 trendline.RemoveAllChildren<C.DisplayRSquaredValue>();
-                trendline.AppendChild(new C.DisplayRSquaredValue { Val = ParseHelpers.IsTruthy(value) });
+                var newRsqr = new C.DisplayRSquaredValue { Val = ParseHelpers.IsTruthy(value) };
+                var rsqrAnchor = (OpenXmlElement?)trendline.GetFirstChild<C.DisplayEquation>()
+                    ?? trendline.GetFirstChild<C.TrendlineLabel>();
+                if (rsqrAnchor != null) trendline.InsertBefore(newRsqr, rsqrAnchor);
+                else trendline.AppendChild(newRsqr);
                 break;
+            }
             case "dispeq" or "equation" or "displayequation":
+            {
+                // dispEq comes AFTER dispRSqr but BEFORE trendlineLbl per CT_Trendline.
                 trendline.RemoveAllChildren<C.DisplayEquation>();
-                trendline.AppendChild(new C.DisplayEquation { Val = ParseHelpers.IsTruthy(value) });
+                var newDispEq = new C.DisplayEquation { Val = ParseHelpers.IsTruthy(value) };
+                var dispEqAnchor = trendline.GetFirstChild<C.TrendlineLabel>();
+                if (dispEqAnchor != null) trendline.InsertBefore(newDispEq, dispEqAnchor);
+                else trendline.AppendChild(newDispEq);
                 break;
+            }
         }
     }
 
@@ -193,8 +210,20 @@ internal static partial class ChartHelper
     internal static C.ErrorBars BuildErrorBars(string spec)
     {
         // Format: "type" or "type:value" e.g. "fixed:5", "percent:10", "stddev", "stderr"
+        // CONSISTENCY(errorbars-bare-number): bare number (e.g. "5") is taken as
+        // fixed:<N>, mirroring how other chart numeric specs accept a value-only
+        // shorthand. Without this, "5" matched no type-name arm and fell through
+        // to FixedValue with no magnitude — producing zero-height error bars.
         var parts = spec.Split(':');
         var typeStr = parts[0].Trim().ToLowerInvariant();
+        string? bareValue = null;
+        if (parts.Length == 1 && double.TryParse(typeStr,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out _))
+        {
+            bareValue = typeStr;
+            typeStr = "fixed";
+        }
 
         var errBars = new C.ErrorBars();
         errBars.AppendChild(new C.ErrorDirection { Val = C.ErrorBarDirectionValues.Y });
@@ -210,7 +239,8 @@ internal static partial class ChartHelper
         };
         errBars.AppendChild(new C.ErrorBarValueType { Val = errValType });
 
-        if (parts.Length > 1 && double.TryParse(parts[1],
+        var magnitudeStr = bareValue ?? (parts.Length > 1 ? parts[1] : null);
+        if (magnitudeStr != null && double.TryParse(magnitudeStr,
             System.Globalization.NumberStyles.Float,
             System.Globalization.CultureInfo.InvariantCulture, out var errVal))
         {
@@ -417,8 +447,10 @@ internal static partial class ChartHelper
                 return true;
 
             case "marker":
-                ApplySeriesMarker(ser, value);
-                return true;
+                // Return ApplySeriesMarker's result directly — false propagates
+                // unsupported up so callers (HandleSeriesDottedProperty contract)
+                // surface marker= with an invalid token as UNSUPPORTED.
+                return ApplySeriesMarker(ser, value);
 
             case "markersize":
             case "marker.size":
@@ -427,12 +459,10 @@ internal static partial class ChartHelper
                 if (marker == null)
                 {
                     marker = new C.Marker();
-                    var insertBefore = (OpenXmlElement?)ser.Elements().FirstOrDefault(e =>
-                        e.LocalName is "xVal" or "yVal" or "cat" or "val" or "bubbleSize"
-                            or "smooth" or "extLst")
-                        ?? ser.Elements().FirstOrDefault(e => e.LocalName == "trendline");
-                    if (insertBefore != null) ser.InsertBefore(marker, insertBefore);
-                    else ser.AppendChild(marker);
+                    // CONSISTENCY(insert-series-child): route via the shared
+                    // helper so a markerSize set after point.color (dPt) or
+                    // dLbls still lands at the schema-correct position.
+                    InsertSeriesChildInOrder(ser, marker);
                 }
                 marker.RemoveAllChildren<C.Size>();
                 marker.AppendChild(new C.Size { Val = ParseHelpers.SafeParseByte(value, "series.markerSize") });
@@ -459,12 +489,10 @@ internal static partial class ChartHelper
                 fill.AppendChild(BuildChartColorElement(value));
                 mSpPr.AppendChild(fill);
                 marker.AppendChild(mSpPr);
-                var insertBefore = (OpenXmlElement?)ser.Elements().FirstOrDefault(e =>
-                    e.LocalName is "xVal" or "yVal" or "cat" or "val" or "bubbleSize"
-                        or "smooth" or "extLst")
-                    ?? ser.Elements().FirstOrDefault(e => e.LocalName == "trendline");
-                if (insertBefore != null) ser.InsertBefore(marker, insertBefore);
-                else ser.AppendChild(marker);
+                // CONSISTENCY(insert-series-child): see ApplySeriesMarker —
+                // route through the shared helper to pick up the full marker
+                // anchor list (including dPt/dLbls).
+                InsertSeriesChildInOrder(ser, marker);
                 return true;
             }
 
@@ -473,9 +501,10 @@ internal static partial class ChartHelper
                 // CONSISTENCY(marker-dotted): mirror "marker=circle" but accept the
                 // dotted alternative seriesN.marker.style=circle. Preserve any
                 // existing c:size so users can set style and size independently.
+                // Returns false (unsupported) for invalid tokens like `picture`.
                 var existing = ser.GetFirstChild<C.Marker>();
                 var existingSize = existing?.GetFirstChild<C.Size>()?.Val?.Value;
-                ApplySeriesMarker(ser, value);
+                if (!ApplySeriesMarker(ser, value)) return false;
                 if (existingSize.HasValue)
                 {
                     var newMarker = ser.GetFirstChild<C.Marker>();
@@ -944,12 +973,26 @@ internal static partial class ChartHelper
         // For majorTickMark: insert before minorTickMark, tickLblPos, or any afterTickElements
         // For minorTickMark: insert before tickLblPos or any afterTickElements
         // For tickLblPos: insert before spPr, txPr, crossAx, etc.
+        // CONSISTENCY(catax-tail-order): CT_CatAx-only tail elements (auto,
+        // lblAlgn, lblOffset, tickLblSkip, tickMarkSkip, noMultiLvlLbl) come
+        // AFTER crossAx/crosses/crossesAt/crossBetween. The generic `_` fallback
+        // would otherwise anchor them before crossAx and produce an invalid file
+        // ("unexpected lblOffset, expected crossAx").
         string[] insertBeforeNames = child.LocalName switch
         {
             "axPos" => afterAxPos,
             "majorTickMark" => ["minorTickMark", "tickLblPos", ..afterTickElements],
             "minorTickMark" => ["tickLblPos", ..afterTickElements],
             "tickLblPos" => afterTickElements,
+            "auto" => ["lblAlgn", "lblOffset", "tickLblSkip", "tickMarkSkip", "noMultiLvlLbl", "extLst"],
+            "lblAlgn" => ["lblOffset", "tickLblSkip", "tickMarkSkip", "noMultiLvlLbl", "extLst"],
+            "lblOffset" => ["tickLblSkip", "tickMarkSkip", "noMultiLvlLbl", "extLst"],
+            "tickLblSkip" => ["tickMarkSkip", "noMultiLvlLbl", "extLst"],
+            "tickMarkSkip" => ["noMultiLvlLbl", "extLst"],
+            "noMultiLvlLbl" => ["extLst"],
+            "majorUnit" => ["minorUnit", "dispUnits", "extLst"],
+            "minorUnit" => ["dispUnits", "extLst"],
+            "dispUnits" => ["extLst"],
             _ => afterTickElements
         };
 
@@ -962,6 +1005,35 @@ internal static partial class ChartHelper
             }
         }
         axis.AppendChild(child);
+    }
+
+    /// <summary>
+    /// Insert a <c>&lt;c:dLbls&gt;</c> element into a chart-group element
+    /// (CT_BarChart / CT_LineChart / CT_PieChart / CT_ScatterChart / etc.) at
+    /// the correct schema position. dLbls schema-orders BEFORE the optional
+    /// per-group tail (dropLines, hiLowLines, upDownBars, gapWidth, overlap,
+    /// showMarker, holeSize, firstSliceAngle) and the mandatory axId(+).
+    ///
+    /// CONSISTENCY(insert-chart-group-dlbls): callers used to hand-roll the
+    /// same anchor chain three times (datalabels= bootstrap, labelPos=
+    /// bootstrap, datalabels.show* bootstrap) and one of them used
+    /// PrependChild which lands dLbls before barDir/ser — schema-invalid.
+    /// Centralized here so future chart-group dLbls insertions get the right
+    /// position without re-deriving the chain.
+    /// </summary>
+    internal static void InsertChartGroupDLbls(OpenXmlElement chartGroup, C.DataLabels dLbls)
+    {
+        var anchor = chartGroup.GetFirstChild<C.DropLines>() as OpenXmlElement
+            ?? chartGroup.GetFirstChild<C.HighLowLines>() as OpenXmlElement
+            ?? chartGroup.GetFirstChild<C.UpDownBars>() as OpenXmlElement
+            ?? chartGroup.GetFirstChild<C.GapWidth>() as OpenXmlElement
+            ?? chartGroup.GetFirstChild<C.Overlap>() as OpenXmlElement
+            ?? chartGroup.GetFirstChild<C.ShowMarker>() as OpenXmlElement
+            ?? chartGroup.GetFirstChild<C.HoleSize>() as OpenXmlElement
+            ?? chartGroup.GetFirstChild<C.FirstSliceAngle>() as OpenXmlElement
+            ?? (OpenXmlElement?)chartGroup.GetFirstChild<C.AxisId>();
+        if (anchor != null) chartGroup.InsertBefore(dLbls, anchor);
+        else chartGroup.AppendChild(dLbls);
     }
 
     /// <summary>
