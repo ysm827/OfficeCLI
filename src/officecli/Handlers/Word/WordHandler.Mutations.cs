@@ -799,9 +799,21 @@ public partial class WordHandler
 
     private string? RemoveWithTrackChange(string path, Dictionary<string, string> properties)
     {
+        // Phase 6: virtual /col[N] path — column is not a real OOXML element
+        // (no <w:col>); the operation marks every per-row cell at column N
+        // with <w:tcPr><w:cellDel/></w:tcPr>. Mirror the plain Remove path's
+        // own col-intercept (line ~116 above) so this also fires before the
+        // generic ParsePath/NavigateToElement (which would fail since col[N]
+        // is virtual).
+        var colMatch = Regex.Match(path, @"^/body/tbl\[(\d+)\]/col\[(\d+)\]$");
+        if (colMatch.Success)
+        {
+            return RemoveTableColumnWithTrackChange(colMatch, properties);
+        }
+
         // Reuse the standard path parser + navigator. Container/shorthand
         // intercepts in the plain Remove path don't apply: trackChange-mode
-        // remove only supports element-level Run/Paragraph.
+        // remove only supports element-level Run/Paragraph/TableRow/TableCell.
         var parts = ParsePath(path);
         var element = NavigateToElement(parts, out var ctx)
             ?? throw new ArgumentException($"Path not found: {path}" + (ctx != null ? $". {ctx}" : ""));
@@ -858,10 +870,39 @@ public partial class WordHandler
                 WrapRunAsDeleted(r, tcAuthor!, tcDate, explicitId: null);
             }
         }
+        else if (element is TableRow rowEl)
+        {
+            // Phase 6: row-level deletion revision. Mirrors `add row +
+            // trackChange.author` (which adds <w:trPr><w:ins/></w:trPr>) —
+            // here we add <w:trPr><w:del/></w:trPr>. No cascade into the
+            // row's cells/runs (same A-route boundary as add row).
+            var trPr = rowEl.GetFirstChild<TableRowProperties>()
+                       ?? rowEl.PrependChild(new TableRowProperties());
+            trPr.AppendChild(new Deleted
+            {
+                Author = tcAuthor!,
+                Date = tcDate,
+                Id = !string.IsNullOrEmpty(tcExplicitId) ? tcExplicitId : GenerateRevisionId(),
+            });
+        }
+        else if (element is TableCell cellEl)
+        {
+            // Phase 6: cell-level deletion revision. <w:tcPr><w:cellDel/></w:tcPr>
+            // marks the cell as deleted; accept-all removes the cell from
+            // the row.
+            var tcPr = cellEl.GetFirstChild<TableCellProperties>()
+                       ?? cellEl.PrependChild(new TableCellProperties());
+            tcPr.AppendChild(new CellDeletion
+            {
+                Author = tcAuthor!,
+                Date = tcDate,
+                Id = !string.IsNullOrEmpty(tcExplicitId) ? tcExplicitId : GenerateRevisionId(),
+            });
+        }
         else
         {
             throw new InvalidOperationException(
-                "remove + trackChange only supports Run and Paragraph in Phase 4.");
+                "remove + trackChange supports Run, Paragraph, TableRow, and TableCell only.");
         }
 
         // Refresh paragraph textId for the affected paragraph(s) so the
@@ -870,6 +911,49 @@ public partial class WordHandler
                         ?? element.Ancestors<Paragraph>().FirstOrDefault();
         if (refreshPara != null) refreshPara.TextId = GenerateParaId();
 
+        _doc.MainDocumentPart?.Document?.Save();
+        return null;
+    }
+
+    /// <summary>
+    /// Phase 6: virtual /col[N] removal with track changes. Marks every
+    /// per-row cell at column N with &lt;w:tcPr&gt;&lt;w:cellDel/&gt;&lt;/w:tcPr&gt;
+    /// instead of physically removing them. Mirrors the existing
+    /// RemoveTableColumn (line ~1935) but skips the cell+gridCol stripping.
+    /// </summary>
+    private string? RemoveTableColumnWithTrackChange(Match colMatch, Dictionary<string, string> properties)
+    {
+        var tableIdx = int.Parse(colMatch.Groups[1].Value);
+        var colIdx = int.Parse(colMatch.Groups[2].Value);
+        var body = _doc.MainDocumentPart?.Document?.Body
+            ?? throw new InvalidOperationException("Body not found");
+        var tables = body.Elements<Table>().ToList();
+        if (tableIdx < 1 || tableIdx > tables.Count)
+            throw new ArgumentException($"Table index {tableIdx} out of range");
+        var table = tables[tableIdx - 1];
+
+        properties.TryGetValue("trackChange.author", out var aRaw);
+        if (aRaw == null) properties.TryGetValue("trackchange.author", out aRaw);
+        properties.TryGetValue("trackChange.date", out var dRaw);
+        if (dRaw == null) properties.TryGetValue("trackchange.date", out dRaw);
+        var author = string.IsNullOrEmpty(aRaw) ? "OfficeCLI" : aRaw!;
+        DateTime date = !string.IsNullOrEmpty(dRaw) && DateTime.TryParse(dRaw, out var d) ? d : DateTime.UtcNow;
+
+        // Mark cell at colIdx in every row.
+        foreach (var row in table.Elements<TableRow>())
+        {
+            var cells = row.Elements<TableCell>().ToList();
+            if (colIdx < 1 || colIdx > cells.Count) continue; // skip short rows
+            var cell = cells[colIdx - 1];
+            var tcPr = cell.GetFirstChild<TableCellProperties>()
+                      ?? cell.PrependChild(new TableCellProperties());
+            tcPr.AppendChild(new CellDeletion
+            {
+                Author = author,
+                Date = date,
+                Id = GenerateRevisionId(),
+            });
+        }
         _doc.MainDocumentPart?.Document?.Save();
         return null;
     }

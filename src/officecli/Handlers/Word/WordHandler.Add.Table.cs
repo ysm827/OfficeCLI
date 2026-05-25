@@ -772,6 +772,28 @@ public partial class WordHandler
             grid.AppendChild(newGridCol);
 
         var cellText = properties.GetValueOrDefault("text", "");
+
+        // Phase 6: virtual-column insertion revision. trackChange.* sub-keys
+        // mark every newly-inserted cell with <w:tcPr><w:cellIns/></w:tcPr>.
+        // The N cells produced (one per existing row) is the column op's
+        // natural output — NOT a cascade into pre-existing content. All
+        // cellIns markers share author/date but get distinct auto-allocated
+        // ids (no explicit trackChange.id support across N cells — it would
+        // be ambiguous).
+        bool colHasTc = HasRowTrackChangeProps(properties);
+        string colTcAuthor = "OfficeCLI";
+        DateTime colTcDate = DateTime.UtcNow;
+        if (colHasTc)
+        {
+            properties.TryGetValue("trackChange.author", out var aRaw);
+            if (aRaw == null) properties.TryGetValue("trackchange.author", out aRaw);
+            if (!string.IsNullOrEmpty(aRaw)) colTcAuthor = aRaw;
+            properties.TryGetValue("trackChange.date", out var dRaw);
+            if (dRaw == null) properties.TryGetValue("trackchange.date", out dRaw);
+            if (!string.IsNullOrEmpty(dRaw) && DateTime.TryParse(dRaw, out var parsed))
+                colTcDate = parsed;
+        }
+
         foreach (var row in targetTable.Elements<TableRow>())
         {
             var newPara = new Paragraph();
@@ -780,12 +802,28 @@ public partial class WordHandler
                 newPara.AppendChild(new Run(new Text(cellText) { Space = SpaceProcessingModeValues.Preserve }));
             var newCell = new TableCell(newPara);
 
+            if (colHasTc)
+            {
+                var tcPr = newCell.PrependChild(new TableCellProperties());
+                tcPr.AppendChild(new CellInsertion
+                {
+                    Author = colTcAuthor,
+                    Date = colTcDate,
+                    Id = GenerateRevisionId(),
+                });
+            }
+
             var cells = row.Elements<TableCell>().ToList();
             if (insertIdx < cells.Count)
                 row.InsertBefore(newCell, cells[insertIdx]);
             else
                 row.AppendChild(newCell);
         }
+
+        if (colHasTc)
+            LastAddUnsupportedProps.RemoveAll(k =>
+                k.StartsWith("trackChange.", StringComparison.OrdinalIgnoreCase)
+                || k.StartsWith("trackchange.", StringComparison.OrdinalIgnoreCase));
 
         var newColIdx = grid.Elements<GridColumn>().ToList().IndexOf(newGridCol) + 1;
         return $"{parentPath}/col[{newColIdx}]";
@@ -1046,6 +1084,33 @@ public partial class WordHandler
                 continue;
             }
             LastAddUnsupportedProps.Add(key);
+        }
+
+        // Phase 6: cell-insertion revision. Any trackChange.* sub-key marks
+        // the newly-added cell with <w:tcPr><w:cellIns/></w:tcPr>. Mirrors
+        // `add row + trackChange.author` (which puts <w:ins/> in trPr).
+        if (HasRowTrackChangeProps(properties))  // reuse the row helper
+        {
+            string? cTcAuthor = null, cTcDate = null, cTcId = null;
+            properties.TryGetValue("trackChange.author", out cTcAuthor);
+            if (cTcAuthor == null) properties.TryGetValue("trackchange.author", out cTcAuthor);
+            properties.TryGetValue("trackChange.date", out cTcDate);
+            if (cTcDate == null) properties.TryGetValue("trackchange.date", out cTcDate);
+            properties.TryGetValue("trackChange.id", out cTcId);
+            if (cTcId == null) properties.TryGetValue("trackchange.id", out cTcId);
+
+            var tcPr = newCell.GetFirstChild<TableCellProperties>()
+                      ?? newCell.PrependChild(new TableCellProperties());
+            tcPr.AppendChild(new CellInsertion
+            {
+                Author = string.IsNullOrEmpty(cTcAuthor) ? "OfficeCLI" : cTcAuthor,
+                Date = !string.IsNullOrEmpty(cTcDate) && DateTime.TryParse(cTcDate, out var cellD)
+                    ? cellD : DateTime.UtcNow,
+                Id = !string.IsNullOrEmpty(cTcId) ? cTcId : GenerateRevisionId(),
+            });
+            LastAddUnsupportedProps.RemoveAll(k =>
+                k.StartsWith("trackChange.", StringComparison.OrdinalIgnoreCase)
+                || k.StartsWith("trackchange.", StringComparison.OrdinalIgnoreCase));
         }
 
         if (index.HasValue)
