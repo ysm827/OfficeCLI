@@ -300,7 +300,7 @@ officecli set "$DOCX" "$P7B" \
 
 # 7c. find + replace + format + revision — the inserted run inherits the
 #     original rPr from the matched text AND has the new format layered on.
-P7C=$(add_para_capture "7c. Replace bar with FOO. (tracked replace 'bar'→bold-green 'BAZ')")
+P7C=$(add_para_capture "7c. Replace bar with FOO. (find target → bold-green replacement)")
 officecli set "$DOCX" "$P7C" \
     --prop find=bar \
     --prop replace=BAZ \
@@ -317,6 +317,35 @@ officecli set "$DOCX" "$P7D" \
     --prop bold=true \
     --prop revision.author=Liam \
     --prop revision.date=2026-05-25T10:53:00Z
+
+# ==========================================================================
+# Section 8 — Less-common find + revision variants (rounds out Section 7).
+#   8a covers `find + replace=""` — a pure tracked deletion via find (one
+#   w:del per matched run, no w:ins). 8b covers `find + paragraph property`
+#   — paragraph-scope mutation captured as w:pPrChange instead of run-scope
+#   w:rPrChange.
+# ==========================================================================
+echo "  -> Section 8: find variants (replace='' delete-only + paragraph prop pPrChange)"
+officecli add "$DOCX" /body --type paragraph --prop text="8. Find variants" --prop style=Heading2
+
+# 8a. find + replace="" + revision — tracked DELETION of every match, no insertion.
+#     Useful for "scrub this token from the doc but keep an audit trail".
+P8A=$(add_para_capture "8a. Remove the OBSOLETE token here. (delete-only via find — no insertion)")
+officecli set "$DOCX" "$P8A" \
+    --prop find=OBSOLETE \
+    --prop replace= \
+    --prop revision.author=Mira \
+    --prop revision.date=2026-05-25T10:54:00Z
+
+# 8b. find + paragraph prop + revision — one w:pPrChange per matched paragraph.
+#     Same code path as `set /body/p[N] --prop align=… --prop revision.author=…`,
+#     but filtered to ONLY the paragraphs whose text actually matched the find.
+P8B=$(add_para_capture "8b. This paragraph contains MARK so its alignment gets tracked-centered.")
+officecli set "$DOCX" "$P8B" \
+    --prop find=MARK \
+    --prop align=center \
+    --prop revision.author=Nora \
+    --prop revision.date=2026-05-25T10:55:00Z
 
 officecli close "$DOCX"
 
@@ -342,15 +371,32 @@ echo "Accept/reject demo on temp copy:"
 echo "  $DEMO"
 echo "=========================================="
 
-# A. Accept everything Alice authored.
-echo "  A) accept by author: /revision[@author=Alice]"
+# A. Single-end addressing of a move pair: `/revision[@id=N][@type=…]`
+#    addresses ONE half of a shared-id pair. Section 3 created moveFrom +
+#    moveTo at id=500; reject only the moveTo half here (the moveFrom
+#    survives — useful when reviewing decides "keep the deletion at source,
+#    discard the insertion at destination"). Done BEFORE step B because B
+#    accepts everything Alice authored, including this move pair.
+echo "  A) single-end move reject: /revision[@id=500][@type=moveTo]"
+officecli set "$DEMO" '/revision[@id=500][@type=moveTo]' --prop revision.action=reject 2>&1 | tail -1
+SURVIVING_MOVE=$(officecli query "$DEMO" revision --json 2>/dev/null | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+for r in d['data']['results']:
+    if r.get('format',{}).get('revision.id') == '500':
+        print(r['format'].get('revision.type'))
+")
+echo "  surviving half of id=500: ${SURVIVING_MOVE:-none} (expected: moveFrom)"
+
+# B. Accept everything Alice authored.
+echo "  B) accept by author: /revision[@author=Alice]"
 officecli set "$DEMO" '/revision[@author=Alice]' --prop revision.action=accept
 
-# B. Reject every w:del-typed revision still left.
-echo "  B) reject by type:   /revision[@type=del]"
+# C. Reject every w:del-typed revision still left.
+echo "  C) reject by type:   /revision[@type=del]"
 officecli set "$DEMO" '/revision[@type=del]' --prop revision.action=reject
 
-# C. Accept Carol's explicit-format change by its stable id.
+# D. Accept Carol's explicit-format change by its stable id.
 CAROL_FMT_ID=$(officecli query "$DEMO" revision --json 2>/dev/null | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
@@ -360,12 +406,12 @@ for r in d['data']['results']:
         print(f['revision.id']); break
 ")
 if [ -n "$CAROL_FMT_ID" ]; then
-    echo "  C) accept by stable id: /revision[@id=$CAROL_FMT_ID]"
+    echo "  D) accept by stable id: /revision[@id=$CAROL_FMT_ID]"
     officecli set "$DEMO" "/revision[@id=$CAROL_FMT_ID]" --prop revision.action=accept
 fi
 
-# D. Accept a marker via its native DOM path. Pick the first surviving marker
-#    after steps A-C and feed its nativePath back to `set --prop revision.action=accept`.
+# E. Accept a marker via its native DOM path. Pick the first surviving marker
+#    after steps A-D and feed its nativePath back to `set --prop revision.action=accept`.
 NATIVE_PATH=$(officecli query "$DEMO" revision --json 2>/dev/null | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
@@ -375,18 +421,60 @@ for r in d['data']['results']:
         print(np); break
 ")
 if [ -n "$NATIVE_PATH" ]; then
-    echo "  D) accept by native path: $NATIVE_PATH"
+    echo "  E) accept by native path: $NATIVE_PATH"
     officecli set "$DEMO" "$NATIVE_PATH" --prop revision.action=accept
 fi
 
-# E. Sweep — reject everything still pending.
-echo "  E) terminal sweep:   /revision  (reject-all)"
+# F. Sweep — reject everything still pending.
+echo "  F) terminal sweep:   /revision  (reject-all)"
 officecli set "$DEMO" /revision --prop revision.action=reject
 
 REMAINING=$(officecli query "$DEMO" revision 2>&1 | grep -c "^/revision" || true)
 echo "  remaining markers after sweep: $REMAINING (expected: 0)"
 
 rm -f "$DEMO"
+
+# ==========================================================================
+# Read-side capabilities — agent-friendly JSON envelope, plain-text render,
+# dump→batch round-trip (revision keys survive serialization, so a doc with
+# tracked changes can be regenerated end-to-end via `batch --input`).
+# ==========================================================================
+echo ""
+echo "=========================================="
+echo "Read-side capabilities on $DOCX:"
+echo "=========================================="
+
+echo "  i) query revision --json (first 3 markers, agent-consumable):"
+officecli query "$DOCX" revision --json 2>/dev/null | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(f'     matches={d[\"data\"][\"matches\"]}')
+for r in d['data']['results'][:3]:
+    f = r['format']
+    print(f'       path={r[\"path\"]}  type={f.get(\"revision.type\")}  author={f.get(\"revision.author\")}  text={repr(r.get(\"text\",\"\"))[:40]}')
+"
+
+echo ""
+echo "  ii) view text — runs/paragraphs render with their current content"
+echo "      (inserted text shows, deleted text is suppressed; cf. Word's"
+echo "       'All Markup' vs 'No Markup' view):"
+officecli view "$DOCX" text 2>&1 | head -10 | sed 's/^/       /'
+
+echo ""
+echo "  iii) dump --format batch round-trip — revision creation keys survive"
+echo "       serialization so a tracked-change doc regenerates end-to-end via"
+echo "       'batch --input <dump.json>'. Sample of revision keys in dump:"
+officecli dump "$DOCX" / --format batch 2>/dev/null \
+    | python3 -c "
+import sys, json
+batch = json.load(sys.stdin)
+rev_steps = [s for s in batch
+             if any(k.startswith('revision.') for k in (s.get('props') or {}))]
+print(f'       total batch steps: {len(batch)},  steps carrying revision.* props: {len(rev_steps)}')
+for s in rev_steps[:3]:
+    keys = [k for k in s['props'] if k.startswith('revision.')]
+    print(f'       {s[\"command\"]:>6} {s.get(\"path\",s.get(\"parent\",\"\")):40} keys={keys}')
+"
 
 echo ""
 echo "Done: $DOCX"
