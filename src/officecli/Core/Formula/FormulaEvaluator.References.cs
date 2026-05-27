@@ -118,10 +118,19 @@ internal partial class FormulaEvaluator
                     ? ResolveSheetCellResult($"{r.Sheet}!{cellRef}")
                     : ResolveCellResult(cellRef);
             }
-        // Always return an Area, even for single-cell refs. This preserves the
-        // origin row/col so ROW(OFFSET(...)) / COLUMN(OFFSET(...)) / ADDRESS can
-        // answer correctly. Single-cell consumers (AsNumber, AsString) transparently
-        // peek the lone cell via FirstCell() in FormulaResult.
+        // R16-1: for a single-cell ref whose resolved value is an error (e.g. a
+        // depth-guard #NUM! from a deep INDIRECT/OFFSET cross-sheet chain),
+        // return the error UNWRAPPED. Wrapping it in an Area hides it —
+        // Area.IsError is false and Area.AsNumber() coerces the error cell to 0
+        // via FirstCell(), so arithmetic (INDIRECT(...)+1) silently produced a
+        // wrong number instead of propagating the error. Returning it directly
+        // lets ApplyBinaryOp see IsError=true and propagate #NUM! up the chain.
+        if (r.Height == 1 && r.Width == 1 && cells[0, 0]?.IsError == true)
+            return cells[0, 0];
+        // Otherwise always return an Area, even for single-cell refs. This
+        // preserves the origin row/col so ROW(OFFSET(...)) / COLUMN(OFFSET(...)) /
+        // ADDRESS can answer correctly. Single-cell consumers (AsNumber, AsString)
+        // transparently peek the lone cell via FirstCell() in FormulaResult.
         return FormulaResult.Area(new RangeData(cells) { BaseRow = r.Row, BaseCol = r.Col, BaseSheet = r.Sheet });
     }
 
