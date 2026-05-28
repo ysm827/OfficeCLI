@@ -1103,11 +1103,12 @@ public class ResidentServer : IDisposable
 
             if (html != null)
             {
-                if (req.Json)
-                {
-                    Console.Write(html);
-                }
-                else
+                // CONSISTENCY(view-html-stdout): mirror CommandBuilder.View.cs — default
+                // mode writes HTML to stdout so `officecli view file html > out.html`
+                // captures actual content. Only --browser writes a temp file and opens it.
+                var browser = req.GetArgOrNull("browser");
+                var wantBrowser = browser != null && (browser == "true" || browser == "1");
+                if (wantBrowser)
                 {
                     // SECURITY: include a random token so the preview path is not predictable.
                     // Without it, a predictable path enables a symlink pre-placement attack that
@@ -1122,6 +1123,10 @@ public class ResidentServer : IDisposable
                         System.Diagnostics.Process.Start(psi);
                     }
                     catch { /* silently ignore if browser can't be opened */ }
+                }
+                else
+                {
+                    Console.Write(html);
                 }
             }
             else
