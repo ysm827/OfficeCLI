@@ -111,6 +111,10 @@ internal class ExcelStyleManager
             if (styleProps.TryGetValue(shortKey, out var shortVal))
                 fontProps[shortKey == "strikethrough" ? "strike" : shortKey] = shortVal;
         }
+        // CONSISTENCY(font-size-alias): `fontsize`/`fontSize` mirrors the
+        // docx/pptx shorthand for size. Maps to font.size.
+        if (styleProps.TryGetValue("fontsize", out var fontSizeVal))
+            fontProps["size"] = fontSizeVal;
         // Normalize "strikethrough" alias within font.* props
         if (fontProps.Remove("strikethrough", out var stVal))
             fontProps["strike"] = stVal;
@@ -155,7 +159,7 @@ internal class ExcelStyleManager
         // --- fill ---
         uint fillId = baseXf.FillId?.Value ?? 0;
         bool applyFill = baseXf.ApplyFill?.Value ?? false;
-        if (styleProps.TryGetValue("fill", out var fillColor) || styleProps.TryGetValue("bgcolor", out fillColor))
+        if (styleProps.TryGetValue("fill", out var fillColor) || styleProps.TryGetValue("bgcolor", out fillColor) || styleProps.TryGetValue("bg", out fillColor))
         {
             if (fillColor.Contains('-') || fillColor.Contains(';'))
             {
@@ -525,9 +529,9 @@ internal class ExcelStyleManager
     public static bool IsStyleKey(string key)
     {
         var lower = key.ToLowerInvariant();
-        return lower is "numfmt" or "fill" or "bgcolor" or "font" or "border"
+        return lower is "numfmt" or "fill" or "bgcolor" or "bg" or "font" or "border"
             or "bold" or "italic" or "strike" or "strikethrough" or "underline"
-            or "superscript" or "subscript" or "size"
+            or "superscript" or "subscript" or "size" or "fontsize"
             or "wrap" or "wraptext" or "numberformat" or "format" or "halign" or "align" or "valign"
             or "rotation" or "indent" or "shrinktofit"
             or "locked" or "formulahidden"
